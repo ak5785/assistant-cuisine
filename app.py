@@ -23,11 +23,11 @@ client_gemini = genai.Client(api_key=gemini_api_key)
 # On force la version API et on utilise le jeton ntn_
 notion = Client(auth=notion_token, notion_version="2025-09-03")
 
-# --- FONCTION DE CORRECTION DE L'ID (CRITIQUE) ---
+# --- FONCTION DE CORRECTION DE L'ID (CRITIQUE pour l'erreur de format) ---
 def format_database_id(id_string):
     """
     S'assure que l'ID de la base de données a le format UUID attendu (avec les tirets).
-    Ex: 2b3f...ae1ca devient 2b3f994f-e8ff-80be-a95f-f6e7a9ae1ca
+    Ceci corrige l'erreur où l'ID est copié sans les tirets.
     """
     id_string = id_string.replace('-', '').strip() # Nettoyage initial
     if len(id_string) == 32:
@@ -36,30 +36,39 @@ def format_database_id(id_string):
 # --- FIN DE LA CORRECTION ---
 
 
-# Règles de conservation (Jours supplémentaires au-delà d'aujourd'hui)
+# --- RÈGLES DE CONSERVATION (LISTE DÉFINITIVE ET ÉTENDUE DES CATÉGORIES) ---
 RULES = {
+    # Catégories de base
     "Viande": 2,
     "Légume": 5,
     "Fruit": 5,
-    "Laitage": 7,
-    "Sec": 365,
-    "Autre": 3
+    "Laitage": 7,  
+    "Sec": 365,    
+    "Autre": 3,    
+    
+    # Catégories étendues (selon votre demande)
+    "Plat préparé": 4, 
+    "Produit laitier": 7, 
+    "Pâtisserie": 3,
+    "Boulangerie": 2
 }
+# --- FIN DES RÈGLES ---
 
 def analyze_image(image_file):
     """Envoie l'image à Gemini pour analyse et retourne un JSON."""
     
     image_bytes = image_file.getvalue()
+    category_list = list(RULES.keys())
 
-    prompt = """
+    prompt = f"""
     Analyse cette image de courses alimentaires. Identifie chaque aliment visible.
     Pour chaque aliment, retourne un objet JSON strict avec :
     - "nom": le nom de l'aliment (ex: "Tomates").
     - "quantite": une estimation de la quantité (ex: "6 unités" ou "500g").
-    - "categorie": CHOISIS UNE SEULE OPTION PARMI : ["Viande", "Légume", "Fruit", "Laitage", "Sec", "Autre"].
+    - "categorie": CHOISIS UNE SEULE OPTION PARMI : {category_list}.
     
     Retourne UNIQUEMENT une liste JSON brute, pas de markdown, pas de texte avant ou après.
-    Exemple: [{"nom": "Pomme", "quantite": "3", "categorie": "Fruit"}]
+    Exemple: [{{"nom": "Pomme", "quantite": "3", "categorie": "Fruit"}}]
     """
     
     image_part = types.Part.from_bytes(data=image_bytes, mime_type=image_file.type)
@@ -82,10 +91,9 @@ def analyze_image(image_file):
         data = json.loads(content)
         if isinstance(data, dict) and 'items' in data:
             return data['items']
-        # Gère le cas où l'IA retourne un objet JSON direct
         if isinstance(data, dict) and 'nom' in data: 
-             return [data] # Retourne un seul élément dans une liste
-        return data # Cas normal où c'est déjà une liste
+             return [data]
+        return data
     except Exception as e:
         st.error(f"Erreur de lecture JSON par l'IA: {e}. Contenu reçu: {content[:200]}...")
         return []
@@ -101,10 +109,11 @@ def add_to_notion(item):
     days = RULES.get(item['categorie'], 3)
     expiry_date = (datetime.date.today() + datetime.timedelta(days=days)).isoformat()
     
-    # 3. Appel à Notion (en utilisant data_source_id pour gérer la nouvelle API)
+    # 3. Appel à Notion (utilise database_id pour corriger l'erreur de validation 'parent')
     notion.pages.create(
-        parent={"data_source_id": formatted_id},
+        parent={"database_id": formatted_id},
         properties={
+            # Ces noms de colonnes DOIVENT correspondre EXACTEMENT (casse/accents) à Notion
             "Nom": {"title": [{"text": {"content": item['nom']}}]},
             "Quantité": {"rich_text": [{"text": {"content": item['quantite']}}]},
             "Catégorie": {"select": {"name": item['categorie']}},
@@ -141,7 +150,8 @@ if uploaded_file:
 if 'scanned_items' in st.session_state:
     st.subheader("Validation avant export vers Notion")
     
-    category_options = ["Viande", "Légume", "Fruit", "Laitage", "Sec", "Autre"]
+    # Les options sont extraites des clés du dictionnaire RULES
+    category_options = list(RULES.keys())
 
     with st.form("validation_form"):
         st.write("Modifiez les noms ou catégories si l'IA s'est trompée.")
@@ -149,8 +159,10 @@ if 'scanned_items' in st.session_state:
         items_to_save = []
         for i, item in enumerate(st.session_state['scanned_items']):
             try:
+                # S'assurer que la catégorie renvoyée par l'IA existe dans notre liste
                 default_index = category_options.index(item['categorie'])
             except ValueError:
+                # Si l'IA invente une catégorie, on utilise 'Autre' par défaut
                 default_index = category_options.index("Autre")
 
             c1, c2, c3 = st.columns([2, 1, 1])
@@ -159,7 +171,6 @@ if 'scanned_items' in st.session_state:
             with c2:
                 qty = st.text_input(f"Qté #{i+1}", value=item.get('quantite', ''), key=f"qty_{i}")
             with c3:
-                # La ligne problématique a été corrigée dans une étape précédente
                 cat = st.selectbox(f"Catégorie #{i+1}", category_options, index=default_index, key=f"cat_{i}") 
             
             items_to_save.append({"nom": name, "quantite": qty, "categorie": cat})
@@ -175,7 +186,6 @@ if 'scanned_items' in st.session_state:
                     add_to_notion(item)
                     success_count += 1
                 except Exception as e:
-                    # Capture des erreurs de validation Notion (ex: option de sélection mal orthographiée)
                     st.warning(f"Impossible d'ajouter '{item['nom']}' à Notion. Erreur : {e}")
                 
                 progress_bar.progress((idx + 1) / len(items_to_save))
@@ -183,7 +193,8 @@ if 'scanned_items' in st.session_state:
             if success_count == len(items_to_save):
                 st.success(f"Stock mis à jour dans Notion ! ({success_count} articles ajoutés)")
             else:
-                 st.warning(f"{success_count} articles ajoutés. Veuillez vérifier l'orthographe exacte de vos colonnes dans Notion (Nom, Quantité, Catégorie, etc.).")
+                 # Le message d'avertissement est conservé pour les problèmes potentiels de propriétés (faute de frappe)
+                 st.warning(f"{success_count} articles ajoutés. Vérifiez l'orthographe exacte des colonnes dans Notion et que l'intégration est partagée.")
             
             st.session_state.pop('scanned_items', None)
             st.session_state.pop('validated_items', None)
