@@ -24,16 +24,26 @@ client_gemini = genai.Client(api_key=gemini_api_key)
 # On force la version API
 notion = Client(auth=notion_token, notion_version="2025-09-03")
 
-# --- FONCTION DE CORRECTION DE L'ID ---
+# --- FONCTION DE CORRECTION DE L'ID (VERSION LA PLUS ROBUSTE) ---
 @st.cache_resource
 def format_database_id(id_string):
     """
     S'assure que l'ID de la base de données a le format UUID attendu (avec les tirets).
+    Elle gère un ID déjà formaté ou un ID brut de 32 caractères.
     """
-    id_string = id_string.replace('-', '').strip()
+    id_string = id_string.strip() # Enlève tout espace au début/fin
+
+    # Si l'ID est déjà au format UUID complet (36 caractères avec tirets), on le retourne
+    if len(id_string) == 36 and id_string[8] == '-':
+        return id_string
+        
+    # Nettoyage et vérification pour l'ID brut (32 caractères)
+    id_string = id_string.replace('-', '')
+
     if len(id_string) == 32:
         return f"{id_string[:8]}-{id_string[8:12]}-{id_string[12:16]}-{id_string[16:20]}-{id_string[20:]}"
-    return id_string
+    
+    return id_string # Retourne l'ID tel quel s'il est mal formé (ce qui causera une erreur plus tard)
 # --- FIN DE LA CORRECTION ---
 
 
@@ -44,7 +54,7 @@ RULES = {
 }
 # --- FIN DES RÈGLES ---
 
-# --- NOUVELLE FONCTION : RÉCUPÉRATION DES ARTICLES QUI EXPIRENT ---
+# --- RÉCUPÉRATION DES ARTICLES QUI EXPIRENT ---
 @st.cache_data(ttl=60)
 def get_expiring_items_from_notion(db_id, days_threshold=14):
     """
@@ -56,7 +66,7 @@ def get_expiring_items_from_notion(db_id, days_threshold=14):
     
     # 1. Requête Notion pour filtrer les articles "En stock" et expirant "bientôt"
     try:
-        # RETOUR À LA MÉTHODE STANDARD 'query'
+        # La méthode 'query' est la plus standard. Si l'erreur revient, la solution est le requirements.txt
         response = notion.databases.query( 
             database_id=formatted_id,
             filter={
@@ -77,8 +87,9 @@ def get_expiring_items_from_notion(db_id, days_threshold=14):
             }
         )
     except Exception as e:
+        # Affiche l'erreur pour le débogage et donne la solution de contournement (requirements.txt)
         st.error(f"Erreur lors de la requête Notion (vérifiez les ID/Token/Partage de l'intégration) : {e}")
-        st.error("❗ **ÉCHEC DE COMPATIBILITÉ** : Le nom de la méthode d'API est incohérent. Si cette erreur persiste, vous devez ajouter `notion-client==2.0.0` dans votre `requirements.txt`.")
+        st.error("❗ **Action requise** : Si l'erreur est '...has no attribute query', vous devez ajouter `notion-client==2.0.0` dans votre `requirements.txt`.")
         return pd.DataFrame() 
 
     # 2. Traitement des données
@@ -89,6 +100,7 @@ def get_expiring_items_from_notion(db_id, days_threshold=14):
         props = page['properties']
         
         try:
+            # Extraction sécurisée des propriétés
             name_prop = props.get('Nom', {}).get('title', [{}])
             name = name_prop[0].get('plain_text', 'N/A') if name_prop and name_prop[0] else 'N/A'
             
@@ -121,7 +133,7 @@ def get_expiring_items_from_notion(db_id, days_threshold=14):
     df = df.sort_values(by="Jours Restants")
     return df
 
-# --- FIN DE LA NOUVELLE FONCTION ---
+# --- FIN DE LA FONCTION DE RÉCUPÉRATION ---
 
 
 # --- FONCTIONS GEMINI ET NOTION D'AJOUT ---
@@ -133,7 +145,7 @@ def analyze_image(image_file):
     prompt = f"""
     Analyse cette image de courses alimentaires. Identifie chaque aliment visible.
     Pour chaque aliment, retourne un objet JSON strict avec :
-    - "nom": le nom de l'aliment (ex: "Tomates").
+    - "nom": le nom de l'aliment (ex: "Tomates).
     - "quantite": une estimation de la quantité (ex: "6 unités" ou "500g").
     - "categorie": CHOISIS UNE SEULE OPTION PARMI : {category_list}.
     
@@ -199,11 +211,11 @@ def highlight_expiry(s):
     is_soon = (s["Jours Restants"] > 3) & (s["Jours Restants"] <= 7)
     
     if is_expired:
-        return ['background-color: #F8BBD0; color: #D32F2F'] * len(s) # Rouge clair, Texte rouge foncé
+        return ['background-color: #F8BBD0; color: #D32F2F'] * len(s)
     elif is_urgent:
-        return ['background-color: #FFE0B2; color: #E65100'] * len(s) # Orange clair, Texte orange foncé
+        return ['background-color: #FFE0B2; color: #E65100'] * len(s)
     elif is_soon:
-        return ['background-color: #FFF9C4; color: #FBC02D'] * len(s) # Jaune très clair, Texte jaune foncé
+        return ['background-color: #FFF9C4; color: #FBC02D'] * len(s)
     else:
         return [''] * len(s)
 
@@ -228,9 +240,7 @@ if not expiring_df.empty:
         column_order=("Nom", "Quantité", "Catégorie", "Date Péremption", "Jours Restants")
     )
 else:
-    # Affiche le message d'info si le DataFrame est vide OU si l'erreur s'est produite (le message d'erreur est affiché au-dessus)
-    if 'DatabasesEndpoint' not in st.session_state.get('last_error', ''):
-        st.info("Aucun article n'expire dans les 14 prochains jours. Tout est sous contrôle ! 👍")
+    st.info("Aucun article n'expire dans les 14 prochains jours. Tout est sous contrôle ! 👍")
 
 st.markdown("---")
 # --- FIN DE LA SECTION D'ALERTE ---
