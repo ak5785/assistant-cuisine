@@ -71,7 +71,7 @@ def add_product_to_notion(item):
                 "Quantité": {"rich_text": [{"text": {"content": item["quantite"]}}]},
                 "Catégorie": {"select": {"name": item["categorie"]}},
                 "Délai": {"number": int(item["delai"])},
-                "Date péremption": {"date": {"start": expiry_date.isoformat()}},
+                "Date_péremption": {"date": {"start": expiry_date.isoformat()}},
                 "Statut": {"select": {"name": "En stock"}},
             },
         )
@@ -99,11 +99,11 @@ def get_full_inventory():
                     {"property": "Status", "select": {"equals": "En stock"}}
                 ]
             },
-            sorts=[{"property": "Date péremption", "direction": "ascending"}],
+            sorts=[{"property": "Date_péremption", "direction": "ascending"}],
         )
     except Exception as e:
         st.error(f"Erreur lors de la connexion à Notion : {e}")
-        st.info("Vérifiez que votre base de données Notion contient bien les propriétés : Nom, Quantité, Catégorie, Délai, Date péremption, et Statut (ou Status)")
+        st.info("Vérifiez que votre base de données Notion contient bien les propriétés : Nom, Quantité, Catégorie, Délai, Date_péremption, et Statut (ou Status)")
         return pd.DataFrame()
 
     rows = []
@@ -122,9 +122,9 @@ def get_full_inventory():
             # Gestion du délai
             delai = props.get("Délai", {}).get("number", 0) or 0
 
-            # Gestion de la date de péremption
+            # Gestion de la date de péremption (avec fallback sur ancien nom)
             expiry_raw = None
-            date_prop = props.get("Date péremption", {})
+            date_prop = props.get("Date_péremption") or props.get("Date péremption", {})
             if date_prop and date_prop.get("date"):
                 expiry_raw = date_prop["date"].get("start")
             
@@ -136,7 +136,7 @@ def get_full_inventory():
                 "Quantité": qte,
                 "Catégorie": cat,
                 "Délai": delai,
-                "Date péremption": expiry_date,
+                "Date_péremption": expiry_date,
                 "Jours Restants": days_left,
             })
         except Exception as e:
