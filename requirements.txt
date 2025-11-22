@@ -1,6 +1,7 @@
 streamlit
-google-genai
 pandas
-numpy
-notion-client==2.0.0
+notion-client
 requests
+google-genai
+reportlab
+Pillow
