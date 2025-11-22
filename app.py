@@ -71,7 +71,7 @@ def get_expiring_items_from_notion(db_id, days_threshold=14):
             filter={
                 "and": [
                     {"property": "Statut", "select": {"equals": "En stock"}},
-                    {"property": "Date Péremption", "date": {"on_or_before": date_limit}}
+                    {"property": "Date_Péremption", "date": {"on_or_before": date_limit}}
                 ]
             }
         )
@@ -93,7 +93,7 @@ def get_expiring_items_from_notion(db_id, days_threshold=14):
 
         cat = props.get("Catégorie", {}).get("select", {}).get("name", "N/A")
 
-        expiry_str = props.get("Date Péremption", {}).get("date", {}).get("start", today.isoformat())
+        expiry_str = props.get("Date_Péremption", {}).get("date", {}).get("start", today.isoformat())
         expiry_date = datetime.date.fromisoformat(expiry_str)
         days_left = (expiry_date - today).days
 
@@ -101,7 +101,7 @@ def get_expiring_items_from_notion(db_id, days_threshold=14):
             "Nom": name,
             "Quantité": qty,
             "Catégorie": cat,
-            "Date Péremption": expiry_str,
+            "Date_Péremption": expiry_str,
             "Jours Restants": days_left
         })
 
@@ -266,7 +266,7 @@ def add_to_notion(item):
             "Catégorie": {"select": {"name": item["categorie"]}},
             "Statut": {"select": {"name": "En stock"}},
             "Délai (jours)": {"number": days},   # ← nouvelle propriété
-            "Date Péremption": {"date": {"start": expiry_date}}
+            "Date_Péremption": {"date": {"start": expiry_date}}
         }
     )
 # ------------------------------------------------------------
