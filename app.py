@@ -56,8 +56,8 @@ def get_expiring_items_from_notion(db_id, days_threshold=14):
     
     # 1. Requête Notion pour filtrer les articles "En stock" et expirant "bientôt"
     try:
-        # CORRECTION CRITIQUE : Utiliser query_a_database si query() n'est pas trouvé
-        response = notion.databases.query_a_database(
+        # RETOUR À LA MÉTHODE STANDARD 'query'
+        response = notion.databases.query( 
             database_id=formatted_id,
             filter={
                 "and": [
@@ -78,7 +78,7 @@ def get_expiring_items_from_notion(db_id, days_threshold=14):
         )
     except Exception as e:
         st.error(f"Erreur lors de la requête Notion (vérifiez les ID/Token/Partage de l'intégration) : {e}")
-        st.error("Si vous avez l'erreur 'query_a_database', votre librairie notion-client est peut-être trop ancienne ou trop récente. Contactez l'assistance pour une vérification.")
+        st.error("❗ **ÉCHEC DE COMPATIBILITÉ** : Le nom de la méthode d'API est incohérent. Si cette erreur persiste, vous devez ajouter `notion-client==2.0.0` dans votre `requirements.txt`.")
         return pd.DataFrame() 
 
     # 2. Traitement des données
@@ -228,7 +228,9 @@ if not expiring_df.empty:
         column_order=("Nom", "Quantité", "Catégorie", "Date Péremption", "Jours Restants")
     )
 else:
-    st.info("Aucun article n'expire dans les 14 prochains jours. Tout est sous contrôle ! 👍")
+    # Affiche le message d'info si le DataFrame est vide OU si l'erreur s'est produite (le message d'erreur est affiché au-dessus)
+    if 'DatabasesEndpoint' not in st.session_state.get('last_error', ''):
+        st.info("Aucun article n'expire dans les 14 prochains jours. Tout est sous contrôle ! 👍")
 
 st.markdown("---")
 # --- FIN DE LA SECTION D'ALERTE ---
