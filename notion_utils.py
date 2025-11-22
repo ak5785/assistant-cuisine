@@ -22,7 +22,9 @@ else:
 # ============================================================
 
 def format_id(id_raw):
-    """Nettoie les ID Notion (peut être utile selon les formats)."""
+    """Nettoie les ID Notion (enlève les tirets si présents)."""
+    if not id_raw:
+        return id_raw
     return id_raw.replace("-", "")
 
 
@@ -43,7 +45,7 @@ RULES = {
 
 
 # ============================================================
-#  1. AJOUT D’UN PRODUIT DANS L’INVENTAIRE
+#  1. AJOUT D'UN PRODUIT DANS L'INVENTAIRE
 # ============================================================
 
 def add_product_to_notion(item):
@@ -63,61 +65,83 @@ def add_product_to_notion(item):
 
     try:
         notion.pages.create(
-            parent={"database_id": format_id(DATABASE_ID)},
+            parent={"database_id": DATABASE_ID},
             properties={
                 "Nom": {"title": [{"text": {"content": item["nom"]}}]},
                 "Quantité": {"rich_text": [{"text": {"content": item["quantite"]}}]},
                 "Catégorie": {"select": {"name": item["categorie"]}},
                 "Délai": {"number": int(item["delai"])},
                 "Date péremption": {"date": {"start": expiry_date.isoformat()}},
-                "Status": {"select": {"name": "En stock"}},
+                "Statut": {"select": {"name": "En stock"}},
             },
         )
     except Exception as e:
-        raise Exception(f"Erreur lors de l’ajout Notion : {e}")
+        raise Exception(f"Erreur lors de l'ajout Notion : {e}")
 
 
 # ============================================================
-#  2. RÉCUPÉRER L’INVENTAIRE COMPLET (STATUS = En stock)
+#  2. RÉCUPÉRER L'INVENTAIRE COMPLET (STATUT = En stock)
 # ============================================================
 
 def get_full_inventory():
+    """Récupère tous les produits avec le statut 'En stock'."""
     if not DATABASE_ID:
-        raise ValueError("DATABASE_ID manquant dans secrets.toml")
+        st.warning("DATABASE_ID manquant dans secrets.toml")
+        return pd.DataFrame()
 
     try:
+        # Requête Notion avec gestion des différents noms de propriété possibles
         response = notion.databases.query(
-            database_id=format_id(DATABASE_ID),
-            filter={"property": "Status", "select": {"equals": "En stock"}},
+            database_id=DATABASE_ID,
+            filter={
+                "or": [
+                    {"property": "Statut", "select": {"equals": "En stock"}},
+                    {"property": "Status", "select": {"equals": "En stock"}}
+                ]
+            },
             sorts=[{"property": "Date péremption", "direction": "ascending"}],
         )
     except Exception as e:
-        raise Exception(f"Erreur Notion lors de la récupération de l'inventaire : {e}")
+        st.error(f"Erreur lors de la connexion à Notion : {e}")
+        st.info("Vérifiez que votre base de données Notion contient bien les propriétés : Nom, Quantité, Catégorie, Délai, Date péremption, et Statut (ou Status)")
+        return pd.DataFrame()
 
     rows = []
     for p in response.get("results", []):
         props = p["properties"]
 
-        nom = props["Nom"]["title"][0]["text"]["content"] if props["Nom"]["title"] else ""
-        qte = props["Quantité"]["rich_text"][0]["text"]["content"] if props["Quantité"]["rich_text"] else ""
-        cat = props["Catégorie"]["select"]["name"] if props["Catégorie"]["select"] else "Autre"
-        delai = props["Délai"]["number"] if props["Délai"]["number"] else 0
+        # Extraction sécurisée des propriétés
+        try:
+            nom = props["Nom"]["title"][0]["text"]["content"] if props.get("Nom", {}).get("title") else ""
+            qte = props["Quantité"]["rich_text"][0]["text"]["content"] if props.get("Quantité", {}).get("rich_text") else ""
+            
+            # Gestion de la catégorie
+            cat_prop = props.get("Catégorie", {})
+            cat = cat_prop.get("select", {}).get("name", "Autre") if cat_prop.get("select") else "Autre"
+            
+            # Gestion du délai
+            delai = props.get("Délai", {}).get("number", 0) or 0
 
-        expiry_raw = props["Date péremption"]["date"]["start"] if props["Date péremption"]["date"] else None
-        expiry_date = datetime.date.fromisoformat(expiry_raw) if expiry_raw else None
+            # Gestion de la date de péremption
+            expiry_raw = None
+            date_prop = props.get("Date péremption", {})
+            if date_prop and date_prop.get("date"):
+                expiry_raw = date_prop["date"].get("start")
+            
+            expiry_date = datetime.date.fromisoformat(expiry_raw) if expiry_raw else None
+            days_left = (expiry_date - datetime.date.today()).days if expiry_date else 999
 
-        days_left = (expiry_date - datetime.date.today()).days if expiry_date else 999
-
-        rows.append(
-            {
+            rows.append({
                 "Nom": nom,
                 "Quantité": qte,
                 "Catégorie": cat,
                 "Délai": delai,
                 "Date péremption": expiry_date,
                 "Jours Restants": days_left,
-            }
-        )
+            })
+        except Exception as e:
+            st.warning(f"Erreur lors du traitement d'un produit : {e}")
+            continue
 
     df = pd.DataFrame(rows)
     if not df.empty:
@@ -131,6 +155,7 @@ def get_full_inventory():
 # ============================================================
 
 def get_expiring_items(days=14):
+    """Retourne les produits qui expirent dans les X jours."""
     inv = get_full_inventory()
 
     if inv.empty:
@@ -149,7 +174,7 @@ def export_menu_to_notion(menu_text, missing_items, nb_days, nb_people, style_me
     Crée une page dans une base Notion 'Menus' avec :
     - Nom = Menu Semaine XX - 2025
     - Semaine = Semaine XX - 2025
-    - Date = aujourd’hui
+    - Date = aujourd'hui
     - Menu = texte
     - Courses = texte
     - Résumé = infos
@@ -181,7 +206,7 @@ def export_menu_to_notion(menu_text, missing_items, nb_days, nb_people, style_me
 
     try:
         notion.pages.create(
-            parent={"database_id": format_id(MENU_DATABASE_ID)},
+            parent={"database_id": MENU_DATABASE_ID},
             properties={
                 "Nom": {"title": [{"text": {"content": title}}]},
                 "Semaine": {"rich_text": [{"text": {"content": sem_label}}]},
@@ -192,4 +217,4 @@ def export_menu_to_notion(menu_text, missing_items, nb_days, nb_people, style_me
             },
         )
     except Exception as e:
-        raise Exception(f"Erreur lors de l’export du menu dans Notion : {e}")
+        raise Exception(f"Erreur lors de l'export du menu dans Notion : {e}")
