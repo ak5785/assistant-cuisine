@@ -137,9 +137,9 @@ def analyze_with_gemini(image_file):
     
     # Essayer plusieurs modèles Gemini jusqu'à ce qu'un fonctionne
     models_to_try = [
+        'gemini-2.0-flash-exp',
         'gemini-1.5-flash-8b',
-        'gemini-1.5-flash-latest', 
-        'gemini-1.5-flash',
+        'gemini-1.5-flash', 
     ]
     
     last_error = None
