@@ -65,24 +65,125 @@ def gpt_generate_text(prompt: str) -> str:
 #    FONCTION PRINCIPALE : GENERATION DE MENU 100% STABLE
 # ============================================================
 
+def from google import genai
+from google.genai import types
+import streamlit as st
+import requests
+
+# ---------- IA TEXTE STABLE (Gemini + fallback GPT) ----------
+
+def gemini_generate_text(prompt: str) -> str:
+    gemini_key = st.secrets.get("GEMINI_API_KEY")
+    if not gemini_key:
+        raise ValueError("GEMINI_API_KEY manquante dans secrets.toml")
+
+    client = genai.Client(api_key=gemini_key)
+
+    res = client.models.generate_content(
+        model="gemini-2.0-flash-exp",
+        contents=prompt,
+        config=types.GenerateContentConfig(
+            temperature=0.35,
+        )
+    )
+    return res.text.strip()
+
+
+def gpt_generate_text(prompt: str) -> str:
+    openai_key = st.secrets.get("OPENAI_API_KEY")
+    if not openai_key:
+        raise ValueError("OPENAI_API_KEY manquante dans secrets.toml")
+
+    headers = {
+        "Authorization": f"Bearer {openai_key}",
+        "Content-Type": "application/json"
+    }
+    payload = {
+        "model": "gpt-4o-mini",
+        "messages": [{"role": "user", "content": prompt}],
+        "max_tokens": 1500,
+        "temperature": 0.35
+    }
+    res = requests.post("https://api.openai.com/v1/chat/completions", headers=headers, json=payload)
+    if res.status_code != 200:
+        raise Exception(f"Erreur OpenAI : {res.text}")
+    return res.json()["choices"][0]["message"]["content"].strip()
+
+
+# ---------- GENERATION MENU IA STABLE ----------
+
 def generate_menu_ai(inventory_df, nb_days=5, nb_people=2, style="Équilibré", restrictions=""):
     """
-    Nouvelle version stable utilisant Gemini uniquement en mode TEXTE.
-    Fallback OpenAI si erreur.
-    Format STRICT pour compatibilité parsing.
+    Génère un menu texte stable, formaté, compatible avec parse_menu_structure.
+    Utilise Gemini en mode texte, avec fallback GPT-4o-mini.
     """
 
-    # Construire la liste des produits disponibles
-    stock = inventory_df.sort_values("Jours Restants", ascending=True)
+    # Tri par urgence (jours restants)
+    stock_sorted = inventory_df.sort_values("Jours Restants", ascending=True)
 
-    expiring_soon = ", ".join(
-        stock[stock["Jours Restants"] <= 3]["Nom"].tolist()
-    ) or "aucun"
+    expiring_soon_list = stock_sorted[stock_sorted["Jours Restants"] <= 3]["Nom"].tolist()
+    full_stock_list = stock_sorted["Nom"].tolist()
 
-    full_stock = ", ".join(stock["Nom"].tolist()) or "aucun"
+    expiring_soon = ", ".join(expiring_soon_list) if expiring_soon_list else "aucun"
+    full_stock = ", ".join(full_stock_list) if full_stock_list else "aucun"
 
-    # Prompt très strict et formaté
     prompt = f"""
+Tu es un chef spécialisé en cuisine anti-gaspi.
+
+Génère un menu sur {nb_days} jours pour {nb_people} personne(s).
+Style souhaité : {style}
+Restrictions alimentaires : {restrictions if restrictions else "aucune"}.
+
+Aliments actuellement en stock :
+{full_stock}
+
+Aliments à consommer en priorité (moins de 3 jours restants) :
+{expiring_soon}
+
+CONTRAINTES IMPORTANTES :
+- Tu dois proposer 3 repas par jour : Petit-déjeuner, Déjeuner, Dîner.
+- Tu dois PRIORISER l'utilisation des aliments proches de la date.
+- Utilise autant que possible les aliments en stock avant d'en ajouter d'autres.
+- Si un ingrédient manque vraiment et est ESSENTIEL, il pourra apparaître dans une liste de courses (mais ne t'en occupe pas ici).
+
+FORMAT FINAL STRICT (PAS D'AUTRE TEXTE AVANT/APRÈS) :
+
+Jour 1
+  Petit-déjeuner : ...
+  Déjeuner : ...
+  Dîner : ...
+
+Jour 2
+  Petit-déjeuner : ...
+  Déjeuner : ...
+  Dîner : ...
+
+(etc. jusqu'à Jour {nb_days})
+
+Ne rajoute AUCUNE explication en dehors de cette structure.
+Ne mets pas de balises, pas de markdown, pas de JSON.
+    """.strip()
+
+    # 1) Tentative avec Gemini
+    try:
+        out = gemini_generate_text(prompt)
+        if out.lower().startswith("jour"):
+            return out
+        # si la sortie ne commence pas par "jour", on tente GPT
+        st.warning("Format Gemini inattendu, tentative avec GPT-4o-mini…")
+    except Exception as e:
+        st.warning(f"Gemini a échoué : {e}. Tentative avec GPT-4o-mini…")
+
+    # 2) Fallback avec GPT-4o-mini
+    try:
+        out = gpt_generate_text(prompt)
+        if out.lower().startswith("jour"):
+            return out
+        else:
+            return "Erreur : le modèle n'a pas respecté le format demandé."
+    except Exception as e:
+        return f"Erreur : impossible de générer un menu valide. Détail : {e}"
+
 Tu es un expert culinaire anti-gaspi.
 
 Génère un menu sur {nb_days} jours, pour {nb_people} personne(s).
