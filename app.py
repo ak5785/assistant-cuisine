@@ -4,11 +4,11 @@ from google.genai import types
 from notion_client import Client
 import datetime
 import json
-import pandas as pd # NOUVEL IMPORT
-import numpy as np # NOUVEL IMPORT
+import pandas as pd
+import numpy as np
 
 # --- CONFIGURATION INITIALE ---
-st.set_page_config(page_title="Assistant Cuisine", page_icon="🥦")
+st.set_page_config(page_title="Assistant Cuisine", page_icon="🥦", layout="wide")
 
 # Récupération des clés secrètes (depuis Streamlit Secrets)
 try:
@@ -16,16 +16,16 @@ try:
     notion_token = st.secrets["NOTION_TOKEN"]
     database_id = st.secrets["DATABASE_ID"]
 except KeyError:
-    st.error("Les clés API (GEMINI_API_KEY, NOTION_TOKEN, DATABASE_ID) ne sont pas configurées dans Streamlit Cloud Secrets. Veuillez vérifier les 'Advanced settings' de votre application.")
+    st.error("Les clés API (GEMINI_API_KEY, NOTION_TOKEN, DATABASE_ID) ne sont pas configurées dans Streamlit Cloud Secrets.")
     st.stop()
 
 # Initialisation des clients 
 client_gemini = genai.Client(api_key=gemini_api_key)
-# On force la version API et on utilise le jeton ntn_
+# On force la version API
 notion = Client(auth=notion_token, notion_version="2025-09-03")
 
 # --- FONCTION DE CORRECTION DE L'ID ---
-@st.cache_resource # Utilise le cache de Streamlit pour ne pas recalculer à chaque fois
+@st.cache_resource
 def format_database_id(id_string):
     """
     S'assure que l'ID de la base de données a le format UUID attendu (avec les tirets).
@@ -37,7 +37,7 @@ def format_database_id(id_string):
 # --- FIN DE LA CORRECTION ---
 
 
-# --- RÈGLES DE CONSERVATION ---
+# --- RÈGLES DE CONSERVATION (LISTE DÉFINITIVE) ---
 RULES = {
     "Viande": 2, "Légume": 5, "Fruit": 5, "Laitage": 7, "Sec": 365, "Autre": 3,    
     "Plat préparé": 4, "Produit laitier": 7, "Pâtisserie": 3, "Boulangerie": 2
@@ -45,20 +45,19 @@ RULES = {
 # --- FIN DES RÈGLES ---
 
 # --- NOUVELLE FONCTION : RÉCUPÉRATION DES ARTICLES QUI EXPIRENT ---
-@st.cache_data(ttl=60) # Rafraîchit les données toutes les 60 secondes
+@st.cache_data(ttl=60)
 def get_expiring_items_from_notion(db_id, days_threshold=14):
     """
     Interroge Notion pour récupérer les articles en stock qui expirent bientôt.
     """
     
     formatted_id = format_database_id(db_id)
-    
-    # Date butoir (aujourd'hui + 14 jours)
     seven_days_from_now = (datetime.date.today() + datetime.timedelta(days=days_threshold)).isoformat()
     
     # 1. Requête Notion pour filtrer les articles "En stock" et expirant "bientôt"
     try:
-        response = notion.databases.query(
+        # CORRECTION CRITIQUE : Utiliser query_a_database si query() n'est pas trouvé
+        response = notion.databases.query_a_database(
             database_id=formatted_id,
             filter={
                 "and": [
@@ -71,7 +70,6 @@ def get_expiring_items_from_notion(db_id, days_threshold=14):
                     {
                         "property": "Date Péremption",
                         "date": {
-                            # Récupère tous les articles qui expirent aujourd'hui ou avant la date seuil
                             "on_or_before": seven_days_from_now
                         }
                     }
@@ -80,7 +78,8 @@ def get_expiring_items_from_notion(db_id, days_threshold=14):
         )
     except Exception as e:
         st.error(f"Erreur lors de la requête Notion (vérifiez les ID/Token/Partage de l'intégration) : {e}")
-        return pd.DataFrame() # Retourne un DataFrame vide en cas d'erreur
+        st.error("Si vous avez l'erreur 'query_a_database', votre librairie notion-client est peut-être trop ancienne ou trop récente. Contactez l'assistance pour une vérification.")
+        return pd.DataFrame() 
 
     # 2. Traitement des données
     items_list = []
@@ -89,10 +88,13 @@ def get_expiring_items_from_notion(db_id, days_threshold=14):
     for page in response['results']:
         props = page['properties']
         
-        # Extraction sécurisée des propriétés (gestion des données manquantes)
         try:
-            name = props.get('Nom', {}).get('title', [{}])[0].get('plain_text', 'N/A')
-            qty = props.get('Quantité', {}).get('rich_text', [{}])[0].get('plain_text', 'N/A')
+            name_prop = props.get('Nom', {}).get('title', [{}])
+            name = name_prop[0].get('plain_text', 'N/A') if name_prop and name_prop[0] else 'N/A'
+            
+            qty_prop = props.get('Quantité', {}).get('rich_text', [{}])
+            qty = qty_prop[0].get('plain_text', 'N/A') if qty_prop and qty_prop[0] else 'N/A'
+            
             category = props.get('Catégorie', {}).get('select', {}).get('name', 'N/A')
             expiry_date_str = props.get('Date Péremption', {}).get('date', {}).get('start', today.isoformat())
             
@@ -108,27 +110,23 @@ def get_expiring_items_from_notion(db_id, days_threshold=14):
                 "Jours Restants": days_remaining
             })
             
-        except (AttributeError, IndexError) as e:
-            # st.warning(f"Un article a une propriété manquante ou mal formatée et a été ignoré : {e}")
-            continue # Passe à l'article suivant si l'extraction échoue
+        except (AttributeError, IndexError, ValueError) as e:
+            continue
 
-    # 3. Conversion en DataFrame
     df = pd.DataFrame(items_list)
     
     if df.empty:
         return df
 
-    # Triage par Jours Restants
     df = df.sort_values(by="Jours Restants")
     return df
 
 # --- FIN DE LA NOUVELLE FONCTION ---
 
 
-# --- AUTRES FONCTIONS (inchangées) ---
+# --- FONCTIONS GEMINI ET NOTION D'AJOUT ---
 def analyze_image(image_file):
     """Analyse l'image avec Gemini."""
-    # ... (le corps de cette fonction est inchangé, laissé ici pour la complétude)
     image_bytes = image_file.getvalue()
     category_list = list(RULES.keys())
 
@@ -156,7 +154,7 @@ def analyze_image(image_file):
     content = response.text.strip()
     
     if not content:
-        st.warning("L'API Gemini a renvoyé une réponse vide (vérifiez votre clé ou votre solde).")
+        st.warning("L'API Gemini a renvoyé une réponse vide.")
         return []
 
     try:
@@ -196,37 +194,32 @@ def add_to_notion(item):
 def highlight_expiry(s):
     """Applique une couleur d'arrière-plan en fonction de l'urgence."""
     
-    # Colonne à inspecter : "Jours Restants"
     is_expired = s["Jours Restants"] < 0
-    is_urgent = (s["Jours Restants"] >= 0) & (s["Jours Restants"] <= 3) # Jours 0 à 3
-    is_soon = (s["Jours Restants"] > 3) & (s["Jours Restants"] <= 7) # Jours 4 à 7
+    is_urgent = (s["Jours Restants"] >= 0) & (s["Jours Restants"] <= 3)
+    is_soon = (s["Jours Restants"] > 3) & (s["Jours Restants"] <= 7)
     
-    # Applique les styles (couleur du texte)
     if is_expired:
-        return ['background-color: red; color: white'] * len(s)
+        return ['background-color: #F8BBD0; color: #D32F2F'] * len(s) # Rouge clair, Texte rouge foncé
     elif is_urgent:
-        return ['background-color: orange; color: black'] * len(s)
+        return ['background-color: #FFE0B2; color: #E65100'] * len(s) # Orange clair, Texte orange foncé
     elif is_soon:
-        return ['background-color: yellow; color: black'] * len(s)
+        return ['background-color: #FFF9C4; color: #FBC02D'] * len(s) # Jaune très clair, Texte jaune foncé
     else:
         return [''] * len(s)
 
 # --- INTERFACE STREAMLIT ---
 st.title("📸 Scanner de Frigo")
 
-# --- NOUVELLE SECTION D'ALERTE ---
+# --- SECTION D'ALERTE ---
 st.header("🛒 État du Garde-Manger")
 st.markdown("---")
 
 with st.spinner("Chargement des alertes de péremption depuis Notion..."):
-    # Appel de la nouvelle fonction
     expiring_df = get_expiring_items_from_notion(database_id)
 
 if not expiring_df.empty:
-    # Applique le style pour les lignes
     styled_df = expiring_df.style.apply(highlight_expiry, axis=1)
 
-    # N'affiche que les colonnes pertinentes et masque l'index pandas
     st.subheader("⚠️ Articles Expirant Bientôt (J-14)")
     st.dataframe(
         styled_df, 
@@ -235,13 +228,13 @@ if not expiring_df.empty:
         column_order=("Nom", "Quantité", "Catégorie", "Date Péremption", "Jours Restants")
     )
 else:
-    st.info("Aucun article n'expire dans les 14 prochains jours. Vous avez tout le temps ! 👍")
+    st.info("Aucun article n'expire dans les 14 prochains jours. Tout est sous contrôle ! 👍")
 
 st.markdown("---")
-# --- FIN DE LA NOUVELLE SECTION ---
+# --- FIN DE LA SECTION D'ALERTE ---
 
 
-# --- SECTION D'UPLOAD (inchangée) ---
+# --- SECTION D'UPLOAD ---
 st.header("➕ Ajouter des Courses")
 uploaded_file = st.file_uploader("Prends une photo de tes courses", type=["jpg", "png", "jpeg"])
 
@@ -308,7 +301,7 @@ if 'scanned_items' in st.session_state:
             if success_count == len(items_to_save):
                 st.success(f"Stock mis à jour dans Notion ! ({success_count} articles ajoutés)")
             else:
-                 st.warning(f"{success_count} articles ajoutés. Vérifiez l'orthographe exacte des colonnes dans Notion et que l'intégration est partagée.")
+                 st.warning(f"{success_count} articles ajoutés. Veuillez vérifier l'orthographe exacte des colonnes dans Notion et le partage de l'intégration.")
             
             st.session_state.pop('scanned_items', None)
             st.session_state.pop('validated_items', None)
