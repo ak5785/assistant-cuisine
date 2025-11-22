@@ -16,10 +16,8 @@ try:
     gemini_api_key = st.secrets.get("GEMINI_API_KEY")
     notion_token = st.secrets["NOTION_TOKEN"]
     database_id = st.secrets["DATABASE_ID"]
-    # Clés optionnelles pour les autres IA
     claude_api_key = st.secrets.get("CLAUDE_API_KEY")
     openai_api_key = st.secrets.get("OPENAI_API_KEY")
-    comet_api_key = st.secrets.get("COMET_API_KEY")
 except KeyError as e:
     st.error(f"Clé manquante dans Streamlit Secrets : {e}")
     st.stop()
@@ -137,29 +135,42 @@ def analyze_with_gemini(image_file):
     
     image_part = types.Part.from_bytes(data=image_bytes, mime_type=image_file.type)
     
-    response = client_gemini.models.generate_content(
-        model='gemini-1.5-flash',
-        contents=[prompt, image_part],
-        config=types.GenerateContentConfig(
-            response_mime_type="application/json"
-        )
-    )
+    # Essayer plusieurs modèles Gemini jusqu'à ce qu'un fonctionne
+    models_to_try = [
+        'gemini-1.5-flash-8b',
+        'gemini-1.5-flash-latest', 
+        'gemini-1.5-flash',
+    ]
     
-    content = response.text.strip()
-    
-    if not content:
-        return []
+    last_error = None
+    for model in models_to_try:
+        try:
+            response = client_gemini.models.generate_content(
+                model=model,
+                contents=[prompt, image_part],
+                config=types.GenerateContentConfig(
+                    response_mime_type="application/json"
+                )
+            )
+            
+            content = response.text.strip()
+            
+            if not content:
+                continue
 
-    try:
-        data = json.loads(content)
-        if isinstance(data, dict) and 'items' in data:
-            return data['items']
-        if isinstance(data, dict) and 'nom' in data: 
-             return [data]
-        return data
-    except Exception as e:
-        st.error(f"Erreur de lecture JSON : {e}")
-        return []
+            data = json.loads(content)
+            if isinstance(data, dict) and 'items' in data:
+                return data['items']
+            if isinstance(data, dict) and 'nom' in data: 
+                return [data]
+            return data
+            
+        except Exception as e:
+            last_error = e
+            continue
+    
+    # Si tous les modèles ont échoué
+    raise Exception(f"Tous les modèles Gemini ont échoué. Dernière erreur: {last_error}")
 
 
 def analyze_with_claude(image_file):
@@ -261,7 +272,7 @@ def analyze_with_openai(image_file):
     }
     
     data = {
-        "model": "gpt-4o",
+        "model": "gpt-4o-mini",  # Modèle plus économique
         "messages": [
             {
                 "role": "user",
@@ -380,6 +391,11 @@ with st.sidebar:
     
     if len(available_ais) < 3:
         st.info("💡 Ajoutez les clés manquantes dans Secrets pour débloquer plus d'options")
+        st.markdown("""
+        **Pour ajouter des IA :**
+        - **Claude** : [console.anthropic.com](https://console.anthropic.com)
+        - **OpenAI** : [platform.openai.com](https://platform.openai.com)
+        """)
 
 # --- SECTION D'ALERTE ---
 st.header("🛒 État du Garde-Manger")
@@ -431,7 +447,11 @@ if uploaded_file:
                 else:
                     st.warning("Aucun aliment détecté.")
             except Exception as e:
-                st.error(f"Erreur lors de l'analyse : {e}")
+                error_msg = str(e)
+                if "429" in error_msg or "quota" in error_msg.lower():
+                    st.error("⏳ Quota Gemini dépassé. Essayez Claude ou GPT-4, ou attendez quelques minutes.")
+                else:
+                    st.error(f"Erreur lors de l'analyse : {e}")
 
 if 'scanned_items' in st.session_state:
     st.subheader("Validation avant export vers Notion")
@@ -475,6 +495,7 @@ if 'scanned_items' in st.session_state:
             
             if success_count == len(items_to_save):
                 st.success(f"✅ {success_count} articles ajoutés à Notion !")
+                st.balloons()
             else:
                 st.warning(f"⚠️ {success_count}/{len(items_to_save)} articles ajoutés.")
             
