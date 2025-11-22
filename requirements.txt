@@ -1,3 +1,5 @@
 streamlit
 google-genai
-notion-client
+pandas
+numpy
+notion-client==2.0.0
