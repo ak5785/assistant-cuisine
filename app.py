@@ -1,5 +1,6 @@
 import streamlit as st
-from openai import OpenAI
+from google import genai
+from google.genai import types
 from notion_client import Client
 import datetime
 import json
@@ -10,16 +11,15 @@ st.set_page_config(page_title="Assistant Cuisine", page_icon="🥦")
 
 # Récupération des clés secrètes (depuis Streamlit Secrets)
 try:
-    openai_api_key = st.secrets["OPENAI_API_KEY"]
+    gemini_api_key = st.secrets["GEMINI_API_KEY"]
     notion_token = st.secrets["NOTION_TOKEN"]
     database_id = st.secrets["DATABASE_ID"]
 except KeyError:
-    st.error("Les clés API (OPENAI_API_KEY, NOTION_TOKEN, DATABASE_ID) ne sont pas configurées dans Streamlit Cloud Secrets. Veuillez vérifier les 'Advanced settings' de votre application.")
+    st.error("Les clés API (GEMINI_API_KEY, NOTION_TOKEN, DATABASE_ID) ne sont pas configurées dans Streamlit Cloud Secrets. Veuillez vérifier les 'Advanced settings' de votre application.")
     st.stop()
 
-# Initialisation des clients avec la nouvelle version d'API pour le jeton ntn_
-client_openai = OpenAI(api_key=openai_api_key)
-# FORCER LA VERSION API POUR SUPPORTER LES JETONS ntn_ et la nouvelle structure de BDD
+# Initialisation des clients avec la nouvelle version d'API Notion
+client_gemini = genai.Client(api_key=gemini_api_key)
 notion = Client(auth=notion_token, notion_version="2025-09-03")
 
 # Règles de conservation (Jours supplémentaires au-delà d'aujourd'hui)
@@ -33,13 +33,12 @@ RULES = {
 }
 
 def analyze_image(image_file):
-    """Envoie l'image à GPT-4o-mini pour analyse et retourne un JSON."""
+    """Envoie l'image à Gemini pour analyse et retourne un JSON."""
     
-    # 1. Encodage de l'image en Base64
-    bytes_data = image_file.getvalue()
-    base64_image = base64.b64encode(bytes_data).decode('utf-8')
+    # Lecture des bytes de l'image
+    image_bytes = image_file.getvalue()
 
-    # 2. Le Prompt pour l'IA (Doit être strict pour garantir le JSON)
+    # 1. Préparation du contenu (texte + image) pour Gemini
     prompt = """
     Analyse cette image de courses alimentaires. Identifie chaque aliment visible.
     Pour chaque aliment, retourne un objet JSON strict avec :
@@ -50,32 +49,31 @@ def analyze_image(image_file):
     Retourne UNIQUEMENT une liste JSON brute, pas de markdown, pas de texte avant ou après.
     Exemple: [{"nom": "Pomme", "quantite": "3", "categorie": "Fruit"}]
     """
-
-    response = client_openai.chat.completions.create(
-        model="gpt-4o-mini",  # Modèle rapide et efficace pour la vision
-        messages=[
-            {
-                "role": "user",
-                "content": [
-                    {"type": "text", "text": prompt},
-                    {
-                        "type": "image_url",
-                        "image_url": {
-                            "url": f"data:image/jpeg;base64,{base64_image}"
-                        }
-                    }
-                ],
-            }
-        ],
-        max_tokens=500,
-        response_format={"type": "json_object"} # Force le JSON
+    
+    # Crée l'objet image pour l'API Gemini
+    image_part = types.Part.from_bytes(data=image_bytes, mime_type=image_file.type)
+    
+    # 2. Appel à l'API Gemini
+    response = client_gemini.models.generate_content(
+        model='gemini-2.5-flash',
+        contents=[prompt, image_part],
+        config=types.GenerateContentConfig(
+            response_mime_type="application/json" # Demande explicitement du JSON
+        )
     )
     
     # 3. Nettoyage et Parsing du JSON
-    content = response.choices[0].message.content
+    content = response.text.strip()
+    
+    if not content:
+        st.warning("L'API Gemini a renvoyé une réponse vide (vérifiez votre clé ou votre solde).")
+        return []
+
     try:
+        # Tente de charger le JSON
         data = json.loads(content)
-        # S'assurer que le résultat est bien une liste si l'IA l'a enveloppé
+        
+        # S'assurer que le résultat est bien une liste (même si l'IA l'a enveloppé)
         if isinstance(data, dict) and 'items' in data:
             return data['items']
         return data
@@ -84,18 +82,15 @@ def analyze_image(image_file):
         return []
 
 def add_to_notion(item):
-    """Ajoute un élément validé dans Notion."""
-    # Calcul de la date de péremption basée sur les règles
+    """Ajoute un élément validé dans Notion. Identique à la version précédente."""
+    
     days = RULES.get(item['categorie'], 3)
     expiry_date = (datetime.date.today() + datetime.timedelta(days=days)).isoformat()
     
     notion.pages.create(
         parent={"database_id": database_id},
         properties={
-            # Titre de la page (colonne "Nom")
             "Nom": {"title": [{"text": {"content": item['nom']}}]},
-            
-            # Autres propriétés (vérifier la casse et les accents!)
             "Quantité": {"rich_text": [{"text": {"content": item['quantite']}}]},
             "Catégorie": {"select": {"name": item['categorie']}},
             "Statut": {"select": {"name": "En stock"}},
@@ -112,11 +107,10 @@ if uploaded_file:
     st.image(uploaded_file, caption="Image analysée", use_container_width=True)
     
     if st.button("🔍 Analyser avec l'IA"):
-        # Reset l'état précédent
         st.session_state.pop('scanned_items', None)
         st.session_state.pop('validated_items', None)
 
-        with st.spinner("Analyse en cours par GPT-4o-mini..."):
+        with st.spinner("Analyse en cours par Gemini-2.5-Flash..."):
             try:
                 data = analyze_image(uploaded_file)
                 if data:
@@ -126,27 +120,24 @@ if uploaded_file:
                 else:
                     st.warning("Aucun aliment détecté ou l'IA n'a pas retourné de JSON valide.")
             except Exception as e:
+                # Cela capturera les erreurs d'authentification Gemini (Key not valid, etc.)
                 st.error(f"Une erreur inattendue est survenue lors de l'analyse : {e}")
 
-# Affichage et Validation
+# Affichage et Validation (Le reste du code est inchangé)
 if 'scanned_items' in st.session_state:
     st.subheader("Validation avant export vers Notion")
     
-    # Options de sélection à utiliser dans le formulaire
     category_options = ["Viande", "Légume", "Fruit", "Laitage", "Sec", "Autre"]
 
-    # Utilisation d'un formulaire pour la validation
     with st.form("validation_form"):
         st.write("Modifiez les noms ou catégories si l'IA s'est trompée.")
         
-        # Le formulaire reconstruit les données dans validated_items
         items_to_save = []
         for i, item in enumerate(st.session_state['scanned_items']):
-            # Tente de trouver l'index de la catégorie détectée par l'IA
             try:
                 default_index = category_options.index(item['categorie'])
             except ValueError:
-                default_index = category_options.index("Autre") # Catégorie par défaut si l'IA se trompe
+                default_index = category_options.index("Autre")
 
             c1, c2, c3 = st.columns([2, 1, 1])
             with c1:
@@ -161,7 +152,6 @@ if 'scanned_items' in st.session_state:
         submitted = st.form_submit_button("✅ Valider et Envoyer vers Notion")
         
         if submitted:
-            # Envoi des données vers Notion
             progress_bar = st.progress(0)
             success_count = 0
             
@@ -170,7 +160,7 @@ if 'scanned_items' in st.session_state:
                     add_to_notion(item)
                     success_count += 1
                 except Exception as e:
-                    st.warning(f"Impossible d'ajouter '{item['nom']}' à Notion. Vérifiez l'orthographe des colonnes et des options de Sélection dans votre base de données : {e}")
+                    st.warning(f"Impossible d'ajouter '{item['nom']}' à Notion. Erreur : {e}")
                 
                 progress_bar.progress((idx + 1) / len(items_to_save))
             
@@ -179,6 +169,5 @@ if 'scanned_items' in st.session_state:
             else:
                  st.warning(f"{success_count} articles ajoutés. Vérifiez les avertissements ci-dessus pour les échecs.")
             
-            # Nettoyage de l'état après soumission
             st.session_state.pop('scanned_items', None)
             st.session_state.pop('validated_items', None)
