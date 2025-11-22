@@ -3,3 +3,4 @@ google-genai
 pandas
 numpy
 notion-client==2.0.0
+requests
