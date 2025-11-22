@@ -19,6 +19,7 @@ try:
     # Clés optionnelles pour les autres IA
     claude_api_key = st.secrets.get("CLAUDE_API_KEY")
     openai_api_key = st.secrets.get("OPENAI_API_KEY")
+    comet_api_key = st.secrets.get("COMET_API_KEY")
 except KeyError as e:
     st.error(f"Clé manquante dans Streamlit Secrets : {e}")
     st.stop()
