@@ -154,4 +154,31 @@ if 'scanned_items' in st.session_state:
             with c2:
                 qty = st.text_input(f"Qté #{i+1}", value=item.get('quantite', ''), key=f"qty_{i}")
             with c3:
-                cat = st.selectbox(f"Catégorie #{i+1}", category_options, index=default_index
+                cat = st.selectbox(f"Catégorie #{i+1}", category_options, index=default_index, key=f"cat_{i}")
+            
+            items_to_save.append({"nom": name, "quantite": qty, "categorie": cat})
+        
+        submitted = st.form_submit_button("✅ Valider et Envoyer vers Notion")
+        
+        if submitted:
+            # Envoi des données vers Notion
+            progress_bar = st.progress(0)
+            success_count = 0
+            
+            for idx, item in enumerate(items_to_save):
+                try:
+                    add_to_notion(item)
+                    success_count += 1
+                except Exception as e:
+                    st.warning(f"Impossible d'ajouter '{item['nom']}' à Notion. Vérifiez l'orthographe des colonnes et des options de Sélection dans votre base de données : {e}")
+                
+                progress_bar.progress((idx + 1) / len(items_to_save))
+            
+            if success_count == len(items_to_save):
+                st.success(f"Stock mis à jour dans Notion ! ({success_count} articles ajoutés)")
+            else:
+                 st.warning(f"{success_count} articles ajoutés. Vérifiez les avertissements ci-dessus pour les échecs.")
+            
+            # Nettoyage de l'état après soumission
+            st.session_state.pop('scanned_items', None)
+            st.session_state.pop('validated_items', None)
