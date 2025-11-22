@@ -5,31 +5,37 @@ from notion_client import Client
 import datetime
 import json
 import pandas as pd
+import base64
+import requests
 
 # --- CONFIGURATION INITIALE ---
 st.set_page_config(page_title="Assistant Cuisine", page_icon="🥦", layout="wide")
 
 # Récupération des clés secrètes
 try:
-    gemini_api_key = st.secrets["GEMINI_API_KEY"]
+    gemini_api_key = st.secrets.get("GEMINI_API_KEY")
     notion_token = st.secrets["NOTION_TOKEN"]
     database_id = st.secrets["DATABASE_ID"]
-except KeyError:
-    st.error("Les clés API (GEMINI_API_KEY, NOTION_TOKEN, DATABASE_ID) ne sont pas configurées dans Streamlit Cloud Secrets.")
+    # Clés optionnelles pour les autres IA
+    claude_api_key = st.secrets.get("CLAUDE_API_KEY")
+    openai_api_key = st.secrets.get("OPENAI_API_KEY")
+except KeyError as e:
+    st.error(f"Clé manquante dans Streamlit Secrets : {e}")
     st.stop()
 
-# Initialisation des clients 
-client_gemini = genai.Client(api_key=gemini_api_key)
+# Initialisation du client Notion
 notion = Client(auth=notion_token)
 
-# --- FONCTION DE CORRECTION DE L'ID (VERSION CORRIGÉE) ---
+# Initialisation du client Gemini (si disponible)
+client_gemini = None
+if gemini_api_key:
+    client_gemini = genai.Client(api_key=gemini_api_key)
+
+# --- FONCTION DE CORRECTION DE L'ID ---
 def format_database_id(id_string):
-    """
-    Nettoie l'ID en retirant tous les tirets et espaces.
-    """
+    """Nettoie l'ID en retirant tous les tirets et espaces."""
     cleaned_id = id_string.replace('-', '').replace(' ', '').strip()
     return cleaned_id
-# --- FIN DE LA CORRECTION ---
 
 # --- RÈGLES DE CONSERVATION ---
 RULES = {
@@ -40,9 +46,7 @@ RULES = {
 # --- RÉCUPÉRATION DES ARTICLES QUI EXPIRENT ---
 @st.cache_data(ttl=60)
 def get_expiring_items_from_notion(db_id, days_threshold=14):
-    """
-    Interroge Notion pour récupérer les articles en stock qui expirent bientôt.
-    """
+    """Interroge Notion pour récupérer les articles en stock qui expirent bientôt."""
     formatted_id = format_database_id(db_id)
     seven_days_from_now = (datetime.date.today() + datetime.timedelta(days=days_threshold)).isoformat()
     
@@ -109,9 +113,13 @@ def get_expiring_items_from_notion(db_id, days_threshold=14):
     df = df.sort_values(by="Jours Restants")
     return df
 
-# --- FONCTIONS GEMINI ---
-def analyze_image(image_file):
+# --- FONCTIONS D'ANALYSE PAR IA ---
+
+def analyze_with_gemini(image_file):
     """Analyse l'image avec Gemini."""
+    if not client_gemini:
+        raise ValueError("Clé API Gemini non configurée")
+    
     image_bytes = image_file.getvalue()
     category_list = list(RULES.keys())
 
@@ -129,7 +137,7 @@ def analyze_image(image_file):
     image_part = types.Part.from_bytes(data=image_bytes, mime_type=image_file.type)
     
     response = client_gemini.models.generate_content(
-        model='gemini-2.0-flash-exp',
+        model='gemini-1.5-flash',
         contents=[prompt, image_part],
         config=types.GenerateContentConfig(
             response_mime_type="application/json"
@@ -139,7 +147,6 @@ def analyze_image(image_file):
     content = response.text.strip()
     
     if not content:
-        st.warning("L'API Gemini a renvoyé une réponse vide.")
         return []
 
     try:
@@ -152,6 +159,166 @@ def analyze_image(image_file):
     except Exception as e:
         st.error(f"Erreur de lecture JSON : {e}")
         return []
+
+
+def analyze_with_claude(image_file):
+    """Analyse l'image avec Claude via l'API Anthropic."""
+    if not claude_api_key:
+        raise ValueError("Clé API Claude non configurée")
+    
+    image_bytes = image_file.getvalue()
+    base64_image = base64.b64encode(image_bytes).decode('utf-8')
+    category_list = list(RULES.keys())
+    
+    prompt = f"""Analyse cette image de courses alimentaires. Identifie chaque aliment visible.
+    Pour chaque aliment, retourne un objet JSON avec :
+    - "nom": le nom de l'aliment
+    - "quantite": une estimation de la quantité
+    - "categorie": choisis parmi {category_list}
+    
+    Retourne UNIQUEMENT un array JSON, sans markdown ni texte supplémentaire.
+    Format: [{{"nom": "Pomme", "quantite": "3", "categorie": "Fruit"}}]"""
+    
+    headers = {
+        "x-api-key": claude_api_key,
+        "anthropic-version": "2023-06-01",
+        "content-type": "application/json"
+    }
+    
+    data = {
+        "model": "claude-3-5-sonnet-20241022",
+        "max_tokens": 2048,
+        "messages": [
+            {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "image",
+                        "source": {
+                            "type": "base64",
+                            "media_type": image_file.type,
+                            "data": base64_image
+                        }
+                    },
+                    {
+                        "type": "text",
+                        "text": prompt
+                    }
+                ]
+            }
+        ]
+    }
+    
+    response = requests.post(
+        "https://api.anthropic.com/v1/messages",
+        headers=headers,
+        json=data
+    )
+    
+    if response.status_code != 200:
+        raise Exception(f"Erreur API Claude: {response.text}")
+    
+    result = response.json()
+    content = result['content'][0]['text'].strip()
+    
+    # Nettoyage du markdown si présent
+    content = content.replace('```json', '').replace('```', '').strip()
+    
+    try:
+        data = json.loads(content)
+        if isinstance(data, dict) and 'items' in data:
+            return data['items']
+        if isinstance(data, dict) and 'nom' in data:
+            return [data]
+        return data
+    except Exception as e:
+        st.error(f"Erreur de lecture JSON Claude : {e}")
+        return []
+
+
+def analyze_with_openai(image_file):
+    """Analyse l'image avec GPT-4 Vision."""
+    if not openai_api_key:
+        raise ValueError("Clé API OpenAI non configurée")
+    
+    image_bytes = image_file.getvalue()
+    base64_image = base64.b64encode(image_bytes).decode('utf-8')
+    category_list = list(RULES.keys())
+    
+    prompt = f"""Analyse cette image de courses alimentaires. Identifie chaque aliment visible.
+    Pour chaque aliment, retourne un objet JSON avec :
+    - "nom": le nom de l'aliment
+    - "quantite": une estimation de la quantité
+    - "categorie": choisis parmi {category_list}
+    
+    Retourne UNIQUEMENT un array JSON, sans markdown ni texte supplémentaire.
+    Format: [{{"nom": "Pomme", "quantite": "3", "categorie": "Fruit"}}]"""
+    
+    headers = {
+        "Authorization": f"Bearer {openai_api_key}",
+        "Content-Type": "application/json"
+    }
+    
+    data = {
+        "model": "gpt-4o",
+        "messages": [
+            {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "text",
+                        "text": prompt
+                    },
+                    {
+                        "type": "image_url",
+                        "image_url": {
+                            "url": f"data:{image_file.type};base64,{base64_image}"
+                        }
+                    }
+                ]
+            }
+        ],
+        "max_tokens": 2048
+    }
+    
+    response = requests.post(
+        "https://api.openai.com/v1/chat/completions",
+        headers=headers,
+        json=data
+    )
+    
+    if response.status_code != 200:
+        raise Exception(f"Erreur API OpenAI: {response.text}")
+    
+    result = response.json()
+    content = result['choices'][0]['message']['content'].strip()
+    
+    # Nettoyage du markdown si présent
+    content = content.replace('```json', '').replace('```', '').strip()
+    
+    try:
+        data = json.loads(content)
+        if isinstance(data, dict) and 'items' in data:
+            return data['items']
+        if isinstance(data, dict) and 'nom' in data:
+            return [data]
+        return data
+    except Exception as e:
+        st.error(f"Erreur de lecture JSON OpenAI : {e}")
+        return []
+
+
+def analyze_image(image_file, ai_choice):
+    """Analyse l'image avec l'IA choisie."""
+    if ai_choice == "Gemini (Google)":
+        return analyze_with_gemini(image_file)
+    elif ai_choice == "Claude (Anthropic)":
+        return analyze_with_claude(image_file)
+    elif ai_choice == "GPT-4 Vision (OpenAI)":
+        return analyze_with_openai(image_file)
+    else:
+        raise ValueError(f"IA non supportée: {ai_choice}")
+
 
 def add_to_notion(item):
     """Ajoute un élément validé dans Notion."""
@@ -188,17 +355,30 @@ def highlight_expiry(s):
         return [''] * len(s)
 
 # --- INTERFACE STREAMLIT ---
-st.title("📸 Scanner de Frigo")
+st.title("📸 Scanner de Frigo Multi-IA")
 
-# DEBUG (À retirer après test)
+# Détection des IA disponibles
+available_ais = []
+if gemini_api_key:
+    available_ais.append("Gemini (Google)")
+if claude_api_key:
+    available_ais.append("Claude (Anthropic)")
+if openai_api_key:
+    available_ais.append("GPT-4 Vision (OpenAI)")
+
+if not available_ais:
+    st.error("❌ Aucune clé API d'IA configurée. Ajoutez au moins GEMINI_API_KEY, CLAUDE_API_KEY ou OPENAI_API_KEY dans vos secrets.")
+    st.stop()
+
+# Affichage des IA disponibles
 with st.sidebar:
-    st.write("🔍 Debug Info:")
-    st.code(f"ID nettoyé: {format_database_id(database_id)}")
-    try:
-        test_db = notion.databases.retrieve(database_id=format_database_id(database_id))
-        st.success("✅ Base Notion accessible")
-    except Exception as e:
-        st.error(f"❌ Erreur: {str(e)[:100]}")
+    st.header("🤖 Configuration IA")
+    st.write("**IA disponibles:**")
+    for ai in available_ais:
+        st.success(f"✅ {ai}")
+    
+    if len(available_ais) < 3:
+        st.info("💡 Ajoutez les clés manquantes dans Secrets pour débloquer plus d'options")
 
 # --- SECTION D'ALERTE ---
 st.header("🛒 État du Garde-Manger")
@@ -223,22 +403,30 @@ st.markdown("---")
 
 # --- SECTION D'UPLOAD ---
 st.header("➕ Ajouter des Courses")
+
+# Sélection de l'IA
+ai_choice = st.selectbox(
+    "🤖 Choisissez l'IA pour l'analyse",
+    available_ais,
+    help="Sélectionnez l'intelligence artificielle qui analysera votre image"
+)
+
 uploaded_file = st.file_uploader("Prends une photo de tes courses", type=["jpg", "png", "jpeg"])
 
 if uploaded_file:
     st.image(uploaded_file, caption="Image analysée", use_container_width=True)
     
-    if st.button("🔍 Analyser avec l'IA"):
+    if st.button(f"🔍 Analyser avec {ai_choice}"):
         st.session_state.pop('scanned_items', None)
         st.session_state.pop('validated_items', None)
 
-        with st.spinner("Analyse en cours..."):
+        with st.spinner(f"Analyse en cours avec {ai_choice}..."):
             try:
-                data = analyze_image(uploaded_file)
+                data = analyze_image(uploaded_file, ai_choice)
                 if data:
                     st.session_state['scanned_items'] = data
                     st.session_state['validated_items'] = [item.copy() for item in data]
-                    st.success(f"{len(data)} aliments détectés !")
+                    st.success(f"✨ {len(data)} aliments détectés par {ai_choice} !")
                 else:
                     st.warning("Aucun aliment détecté.")
             except Exception as e:
