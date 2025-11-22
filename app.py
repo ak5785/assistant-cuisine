@@ -8,6 +8,7 @@ from notion_utils import (
     get_expiring_items,
     get_full_inventory,
     add_product_to_notion,
+    export_menu_to_notion,
     RULES,
 )
 from menu_pro import generate_menu_ai, compute_missing_ingredients_pro
@@ -42,11 +43,6 @@ button[kind="primary"], button[kind="secondary"] {
   padding: 0.5rem 1.1rem;
   border-radius: 0.8rem !important;
   font-size: 0.95rem !important;
-}
-
-/* Petites cartes visuelles */
-div.stContainer {
-  border-radius: 0.9rem;
 }
 
 /* En-têtes un peu plus compactes */
@@ -217,7 +213,7 @@ with tab_scan:
 
                 # Reset
                 st.session_state.pop("detected_items", None)
-                st.experimental_rerun()
+                st.rerun()
 
 
 # ------------------------------------------------------------
@@ -318,7 +314,7 @@ with tab_manual:
             st.session_state.manual_items = [
                 {"nom": "", "quantite": "1", "categorie": "Autre", "delai": 3}
             ]
-            st.experimental_rerun()
+            st.rerun()
 
 
 # ------------------------------------------------------------
@@ -423,6 +419,26 @@ with tab_menu:
                         theme=pdf_theme,
                     )
 
+                    st.markdown("---")
+                    st.subheader("📝 Export du menu vers Notion (‘Menus’)")
+
+                    if st.button(
+                        "📝 Exporter ce menu dans Notion",
+                        use_container_width=True,
+                    ):
+                        try:
+                            export_menu_to_notion(
+                                menu_text,
+                                missing_items,
+                                nb_days,
+                                nb_people,
+                                style_menu,
+                                restrictions,
+                            )
+                            st.success("✅ Menu exporté dans Notion (base 'Menus').")
+                        except Exception as e:
+                            st.error(f"Erreur lors de l’export Notion : {e}")
+
 
 # ------------------------------------------------------------
 # ONGLET 5 — RÉGLAGES / AIDE
@@ -435,7 +451,7 @@ with tab_settings:
     st.markdown(
         """
 - `ia_utils.py` → analyse d’images (Gemini / Claude / GPT-4o)
-- `notion_utils.py` → connexion à ta base Notion (inventaire)
+- `notion_utils.py` → connexion à ta base Notion (inventaire + menus)
 - `menu_pro.py` → génération du menu & liste de courses intelligente
 - `pdf_utils.py` → PDF premium (bandeau, QR, couleurs, urgences…)
 """
@@ -452,6 +468,7 @@ CLAUDE_API_KEY
 OPENAI_API_KEY
 NOTION_TOKEN
 DATABASE_ID
+MENU_DATABASE_ID
 """,
         language="bash",
     )

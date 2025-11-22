@@ -1,15 +1,15 @@
-from google import genai
-from google.genai import types
-import json
+import re
 import streamlit as st
 import requests
-import re
+from google import genai
+from google.genai import types
 
-# ===============================
-#  IA GEMINI EN MODE TEXTE STABLE
-# ===============================
+# ============================================================
+#  GÉNÉRATION IA STABLE (Gemini → fallback GPT)
+# ============================================================
 
 def gemini_generate_text(prompt: str) -> str:
+    """Appel Gemini en mode TEXTE uniquement (stable)."""
     GEMINI_KEY = st.secrets.get("GEMINI_API_KEY")
     if not GEMINI_KEY:
         raise ValueError("GEMINI_API_KEY manquante dans secrets.toml")
@@ -24,15 +24,13 @@ def gemini_generate_text(prompt: str) -> str:
                 temperature=0.35,
             )
         )
-        return response.text
+        return response.text.strip()
     except Exception as e:
         raise Exception(f"Erreur Gemini texte : {e}")
 
-# ===============
-#  Fallback GPT-4o
-# ===============
 
 def gpt_generate_text(prompt: str) -> str:
+    """Fallback OpenAI GPT-4o-mini."""
     OPENAI_KEY = st.secrets.get("OPENAI_API_KEY")
     if not OPENAI_KEY:
         raise ValueError("OPENAI_API_KEY manquante dans secrets.toml")
@@ -45,7 +43,7 @@ def gpt_generate_text(prompt: str) -> str:
     payload = {
         "model": "gpt-4o-mini",
         "messages": [{"role": "user", "content": prompt}],
-        "max_tokens": 1500,
+        "max_tokens": 2000,
         "temperature": 0.35
     }
 
@@ -58,95 +56,44 @@ def gpt_generate_text(prompt: str) -> str:
     if res.status_code != 200:
         raise Exception("Erreur OpenAI : " + res.text)
 
-    return res.json()["choices"][0]["message"]["content"]
-
-
-# ============================================================
-#    FONCTION PRINCIPALE : GENERATION DE MENU 100% STABLE
-# ============================================================
-
-def from google import genai
-from google.genai import types
-import streamlit as st
-import requests
-
-# ---------- IA TEXTE STABLE (Gemini + fallback GPT) ----------
-
-def gemini_generate_text(prompt: str) -> str:
-    gemini_key = st.secrets.get("GEMINI_API_KEY")
-    if not gemini_key:
-        raise ValueError("GEMINI_API_KEY manquante dans secrets.toml")
-
-    client = genai.Client(api_key=gemini_key)
-
-    res = client.models.generate_content(
-        model="gemini-2.0-flash-exp",
-        contents=prompt,
-        config=types.GenerateContentConfig(
-            temperature=0.35,
-        )
-    )
-    return res.text.strip()
-
-
-def gpt_generate_text(prompt: str) -> str:
-    openai_key = st.secrets.get("OPENAI_API_KEY")
-    if not openai_key:
-        raise ValueError("OPENAI_API_KEY manquante dans secrets.toml")
-
-    headers = {
-        "Authorization": f"Bearer {openai_key}",
-        "Content-Type": "application/json"
-    }
-    payload = {
-        "model": "gpt-4o-mini",
-        "messages": [{"role": "user", "content": prompt}],
-        "max_tokens": 1500,
-        "temperature": 0.35
-    }
-    res = requests.post("https://api.openai.com/v1/chat/completions", headers=headers, json=payload)
-    if res.status_code != 200:
-        raise Exception(f"Erreur OpenAI : {res.text}")
     return res.json()["choices"][0]["message"]["content"].strip()
 
 
-# ---------- GENERATION MENU IA STABLE ----------
+# ============================================================
+#  GÉNÉRATION DE MENU IA STABLE
+# ============================================================
 
 def generate_menu_ai(inventory_df, nb_days=5, nb_people=2, style="Équilibré", restrictions=""):
-    """
-    Génère un menu texte stable, formaté, compatible avec parse_menu_structure.
-    Utilise Gemini en mode texte, avec fallback GPT-4o-mini.
-    """
+    """Génère un menu texte stable, formaté, exploitable par parsing."""
+    
+    # Trier par jours restants
+    inv = inventory_df.sort_values("Jours Restants", ascending=True)
 
-    # Tri par urgence (jours restants)
-    stock_sorted = inventory_df.sort_values("Jours Restants", ascending=True)
-
-    expiring_soon_list = stock_sorted[stock_sorted["Jours Restants"] <= 3]["Nom"].tolist()
-    full_stock_list = stock_sorted["Nom"].tolist()
+    expiring_soon_list = inv[inv["Jours Restants"] <= 3]["Nom"].tolist()
+    full_stock_list = inv["Nom"].tolist()
 
     expiring_soon = ", ".join(expiring_soon_list) if expiring_soon_list else "aucun"
     full_stock = ", ".join(full_stock_list) if full_stock_list else "aucun"
 
     prompt = f"""
-Tu es un chef spécialisé en cuisine anti-gaspi.
+Tu es un chef spécialisé en anti-gaspillage.
 
-Génère un menu sur {nb_days} jours pour {nb_people} personne(s).
-Style souhaité : {style}
-Restrictions alimentaires : {restrictions if restrictions else "aucune"}.
+Génère un menu sur {nb_days} jours pour {nb_people} personnes.
+Style demandé : {style}
+Restrictions : {restrictions if restrictions else "aucune"}
 
-Aliments actuellement en stock :
+ALIMENTS EN STOCK :
 {full_stock}
 
-Aliments à consommer en priorité (moins de 3 jours restants) :
+ALIMENTS À CONSOMMER EN URGENCE :
 {expiring_soon}
 
-CONTRAINTES IMPORTANTES :
-- Tu dois proposer 3 repas par jour : Petit-déjeuner, Déjeuner, Dîner.
-- Tu dois PRIORISER l'utilisation des aliments proches de la date.
-- Utilise autant que possible les aliments en stock avant d'en ajouter d'autres.
-- Si un ingrédient manque vraiment et est ESSENTIEL, il pourra apparaître dans une liste de courses (mais ne t'en occupe pas ici).
-
-FORMAT FINAL STRICT (PAS D'AUTRE TEXTE AVANT/APRÈS) :
+CONTRAINTES :
+- 3 repas par jour : Petit-déjeuner, Déjeuner, Dîner
+- Utilise en priorité les aliments proches d'expiration
+- Utilise le stock existant autant que possible
+- Tu peux ajouter des ingrédients secondaires (épices, condiments)
+- Format strict demandé :
 
 Jour 1
   Petit-déjeuner : ...
@@ -158,78 +105,157 @@ Jour 2
   Déjeuner : ...
   Dîner : ...
 
-(etc. jusqu'à Jour {nb_days})
+…
 
-Ne rajoute AUCUNE explication en dehors de cette structure.
-Ne mets pas de balises, pas de markdown, pas de JSON.
-    """.strip()
+NE RAJOUTE AUCUN TEXTE AVANT OU APRÈS.
+PAS DE TITRES.
+PAS DE JSON.
+PAS DE MARKDOWN.
+    """
 
-    # 1) Tentative avec Gemini
+    # 1) Gemini
     try:
         out = gemini_generate_text(prompt)
         if out.lower().startswith("jour"):
             return out
-        # si la sortie ne commence pas par "jour", on tente GPT
-        st.warning("Format Gemini inattendu, tentative avec GPT-4o-mini…")
+        st.warning("Format Gemini inattendu → tentative GPT…")
     except Exception as e:
-        st.warning(f"Gemini a échoué : {e}. Tentative avec GPT-4o-mini…")
+        st.warning(f"Gemini erreur : {e} → tentative GPT…")
 
-    # 2) Fallback avec GPT-4o-mini
-    try:
-        out = gpt_generate_text(prompt)
-        if out.lower().startswith("jour"):
-            return out
-        else:
-            return "Erreur : le modèle n'a pas respecté le format demandé."
-    except Exception as e:
-        return f"Erreur : impossible de générer un menu valide. Détail : {e}"
-
-Tu es un expert culinaire anti-gaspi.
-
-Génère un menu sur {nb_days} jours, pour {nb_people} personne(s).
-Style demandé : {style}
-Restrictions alimentaires : {restrictions if restrictions else "aucune"}
-
-LISTE DES ALIMENTS EN STOCK :
-{full_stock}
-
-ALIMENTS À CONSOMMER EN PRIORITÉ (moins de 3 jours) :
-{expiring_soon}
-
-⚠️ FORMAT FINAL STRICT A RESPECTER ABSOLUMENT :
-Jour 1
-  Petit-déjeuner : ...
-  Déjeuner : ...
-  Dîner : ...
-
-Jour 2
-  Petit-déjeuner : ...
-  Déjeuner : ...
-  Dîner : ...
-(etc.)
-
-⚠️ EXIGENCES IMPORTANTES :
-- Toujours 3 repas par jour (Petit-déjeuner, Déjeuner, Dîner)
-- Prioriser les aliments proches d'expiration
-- Proposer des repas simples et réalistes
-- Pas de contenu additionnel avant ou après
-- Pas de JSON
-- Pas de balises
-
-Donne uniquement le texte du menu (pas d’explications).
-"""
-
-    # Essayer GEMINI (stable)
-    try:
-        out = gemini_generate_text(prompt).strip()
-        if out.lower().startswith("jour"):
-            return out
-    except Exception as e:
-        st.warning(f"Gemini a échoué : {e}. Fallback vers GPT…")
-
-    # Fallback GPT-4o-mini
-    out = gpt_generate_text(prompt).strip()
+    # 2) GPT fallback
+    out = gpt_generate_text(prompt)
     if out.lower().startswith("jour"):
         return out
 
-    return "Erreur : impossible de générer un menu valide."
+    return "Erreur IA : impossible de générer un menu valide."
+
+
+# ============================================================
+#  PARSING DU MENU (Jour → repas)
+# ============================================================
+
+def parse_menu_structure(menu_text):
+    """
+    Transforme le texte du menu en structure exploitable :
+    {
+      "Jour 1": {
+         "Petit-déjeuner": "...",
+         "Déjeuner": "...",
+         "Dîner": "..."
+      },
+      ...
+    }
+    """
+    days = {}
+    current_day = None
+
+    lines = menu_text.split("\n")
+    for line in lines:
+        line = line.strip()
+
+        # Détecter un "Jour X"
+        if re.match(r"^Jour\s+\d+", line, re.IGNORECASE):
+            current_day = line
+            days[current_day] = {}
+            continue
+
+        # Repas
+        if "Petit-déjeuner" in line:
+            days[current_day]["Petit-déjeuner"] = line.split(":", 1)[1].strip()
+        elif "Déjeuner" in line:
+            days[current_day]["Déjeuner"] = line.split(":", 1)[1].strip()
+        elif "Dîner" in line:
+            days[current_day]["Dîner"] = line.split(":", 1)[1].strip()
+
+    return days
+
+
+# ============================================================
+#  EXTRACTION DES INGREDIENTS D’UNE PHRASE
+# ============================================================
+
+# Liste générale d'ingrédients secondaires qu’on ignore s’ils manquent
+INGREDIENTS_SECONDAIRES = [
+    "sel", "poivre", "huile", "vinaigre", "beurre", "épice", "épices",
+    "ail", "oignon", "herbe", "herbes", "bouillon", "levure",
+    "sucre", "citron", "miel", "sauce", "condiment"
+]
+
+def extract_ingredients_from_text(text):
+    """Extraction simple des mots-clés alimentaires."""
+    text = text.lower()
+
+    # Remplacement ponctuation → espaces
+    text = re.sub(r"[.,;:!?()]", " ", text)
+
+    tokens = text.split()
+    ingredients = set()
+
+    for tok in tokens:
+        if len(tok) < 3:
+            continue
+        if tok in INGREDIENTS_SECONDAIRES:
+            continue
+        ingredients.add(tok)
+
+    return ingredients
+
+
+# ============================================================
+#  CALCUL DES MANQUANTS (PRO VERSION)
+# ============================================================
+
+def compute_missing_ingredients_pro(menu_text, inventory_df):
+    """
+    Compare chaque repas du menu avec l’inventaire,
+    renvoie une liste :
+      [
+        {
+          "nom": "...",
+          "categorie": "...",
+          "priorite": 1/2/3,
+          "jour": "...",
+          "repas": "...",
+          "quantite_estimee": "..."
+        }
+      ]
+    """
+
+    parsed = parse_menu_structure(menu_text)
+    inv_names = [n.lower() for n in inventory_df["Nom"].tolist()]
+
+    results = []
+
+    for day, meals in parsed.items():
+        for repas, description in meals.items():
+            needed = extract_ingredients_from_text(description)
+
+            for ing in needed:
+                # déjà en stock ?
+                if ing in inv_names:
+                    continue
+
+                # secondaire → on ignore
+                if ing in INGREDIENTS_SECONDAIRES:
+                    continue
+
+                # Création entrée manquante
+                result = {
+                    "nom": ing,
+                    "categorie": "Ingrédient",
+                    "jour": day,
+                    "repas": repas,
+                    "priorite": 3,
+                    "quantite_estimee": None
+                }
+
+                # priorisation (ex: premier jour = priorité haute)
+                day_num = int(re.findall(r"\d+", day)[0])
+                if day_num == 1:
+                    result["priorite"] = 1
+                elif day_num == 2:
+                    result["priorite"] = 2
+
+                results.append(result)
+
+    return results

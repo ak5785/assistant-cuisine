@@ -1,171 +1,226 @@
-import streamlit as st
-from reportlab.platypus import (
-    SimpleDocTemplate, Paragraph, Spacer, Image, Table, TableStyle, PageBreak
-)
-from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+import io
+import qrcode
+import datetime
 from reportlab.lib.pagesizes import A4
 from reportlab.lib import colors
-from reportlab.graphics.shapes import Drawing
-from reportlab.graphics.barcode import qr
+from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle
+from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+from reportlab.lib.units import cm
+import streamlit as st
 
 
-# ------------------------------------------------------------
-# 1. Bandeau en haut de page avec thèmes
-# ------------------------------------------------------------
+# ============================================================
+#  Génération QR code
+# ============================================================
 
-def draw_header(canvas, doc, theme="light"):
-    if theme == "dark":
-        color_bg = colors.HexColor("#2C3E50")
-        color_text = colors.white
-    else:
-        color_bg = colors.HexColor("#16A085")
-        color_text = colors.white
+def generate_qr_code(url="https://assistant-cuisine.streamlit.app"):
+    """Crée une image QR code en mémoire (PNG)."""
+    qr = qrcode.QRCode(
+        version=1,
+        error_correction=qrcode.constants.ERROR_CORRECT_H,
+        box_size=4,
+        border=2,
+    )
+    qr.add_data(url)
+    qr.make(fit=True)
 
-    canvas.saveState()
-    canvas.setFillColor(color_bg)
-    canvas.rect(0, A4[1] - 60, A4[0], 60, fill=True)
+    img = qr.make_image(fill_color="black", back_color="white")
 
-    canvas.setFillColor(color_text)
-    canvas.setFont("Helvetica-Bold", 18)
-    canvas.drawString(30, A4[1] - 40, "Assistant Cuisine — Menu Anti-Gaspi")
-    canvas.restoreState()
-
-
-# ------------------------------------------------------------
-# 2. Icônes par catégorie
-# ------------------------------------------------------------
-
-def category_icon(cat):
-    icons = {
-        "viande": "🥩",
-        "poisson": "🐟",
-        "féculent": "🥔",
-        "légume": "🥕",
-        "fruit": "🍎",
-        "laitier": "🧀",
-        "autre": "🍽️"
-    }
-    return icons.get(cat, "🍽️")
+    buffer = io.BytesIO()
+    img.save(buffer, format="PNG")
+    buffer.seek(0)
+    return buffer
 
 
-# ------------------------------------------------------------
-# 3. Génération du PDF Premium++
-# ------------------------------------------------------------
+# ============================================================
+#  Styles PDF
+# ============================================================
 
-def export_menu_pdf(menu_text, missing_items, output_path,
-                    logo_path=None, theme="light", app_url="https://assistant-cuisine.streamlit.app"):
+def get_styles(theme="light"):
     styles = getSampleStyleSheet()
 
-    # Styles personnalisés
-    body = ParagraphStyle(
-        'Body',
-        parent=styles['BodyText'],
+    if theme == "dark":
+        text_color = colors.whitesmoke
+        bg_color = colors.HexColor("#1E1E1E")
+        accent = colors.HexColor("#27AE60")
+    else:
+        text_color = colors.black
+        bg_color = colors.white
+        accent = colors.HexColor("#2E86C1")
+
+    title = ParagraphStyle(
+        "title",
+        parent=styles["Title"],
+        fontSize=22,
+        textColor=text_color,
+        alignment=1,
+        spaceAfter=12,
+    )
+
+    h2 = ParagraphStyle(
+        "h2",
+        parent=styles["Heading2"],
+        fontSize=16,
+        textColor=accent,
+        spaceAfter=8,
+    )
+
+    normal = ParagraphStyle(
+        "normal",
+        parent=styles["BodyText"],
         fontSize=11,
-        leading=14,
-        textColor=(colors.white if theme == 'dark' else colors.black)
-    )
-    section = ParagraphStyle(
-        'Section',
-        parent=styles['Heading2'],
-        fontSize=14,
-        textColor=(colors.HexColor('#1ABC9C') if theme == 'light' else colors.HexColor('#A3E4D7'))
-    )
-    urgent_title = ParagraphStyle(
-        'Urgent',
-        parent=styles['Heading2'],
-        fontSize=14,
-        textColor=colors.HexColor('#E74C3C')
+        textColor=text_color,
+        leading=15,
     )
 
-    doc = SimpleDocTemplate(output_path, pagesize=A4)
-    story = []
+    urgent = ParagraphStyle(
+        "urgent",
+        parent=styles["BodyText"],
+        fontSize=12,
+        textColor=colors.red,
+        leading=16,
+    )
 
-    # Logo si disponible
-    if logo_path:
-        try:
-            story.append(Image(logo_path, width=120, height=120))
-            story.append(Spacer(1, 12))
-        except:
-            pass
+    return {
+        "title": title,
+        "h2": h2,
+        "normal": normal,
+        "urgent": urgent,
+        "bg": bg_color,
+        "accent": accent,
+    }
 
-    # Encadré PRODUITS URGENTS (priorité 1)
-    urgent_items = [it for it in missing_items if it["priorite"] == 1]
-    if urgent_items:
-        story.append(Paragraph("🔥 Produits urgents à acheter :", urgent_title))
-        for u in urgent_items:
-            line = f"<b>{category_icon(u['categorie'])}</b> {u['nom']}"
-            if u.get("quantite_estimee"):
-                line += f" (~{u['quantite_estimee']})"
-            story.append(Paragraph(line, body))
-        story.append(Spacer(1, 20))
 
-    # MENU COMPLET
-    story.append(Paragraph("Menu complet :", section))
-    story.append(Spacer(1, 6))
-    story.append(Paragraph(menu_text.replace("\n", "<br/>"), body))
-    story.append(PageBreak())
+# ============================================================
+#  Création du PDF premium
+# ============================================================
 
-    # LISTE DE COURSES PRIORISÉE
-    story.append(Paragraph("Liste de courses priorisée :", section))
-    story.append(Spacer(1, 10))
+def build_pdf(menu_text, missing_items, theme="light"):
+    """
+    Construit le PDF en mémoire et renvoie un buffer prêt à télécharger.
+    """
 
-    table_data = [["Priorité", "Ingrédient", "Catégorie", "Jour", "Repas", "Quantité"]]
+    buffer = io.BytesIO()
 
-    for it in missing_items:
-        icon = category_icon(it["categorie"])
-        table_data.append([
-            f"P{it['priorite']}",
-            f"{icon} {it['nom']}",
-            it["categorie"],
-            it["jour"],
-            it["repas"],
-            it.get("quantite_estimee", "")
+    styles = get_styles(theme)
+
+    doc = SimpleDocTemplate(
+        buffer,
+        pagesize=A4,
+        leftMargin=2 * cm,
+        rightMargin=2 * cm,
+        topMargin=2 * cm,
+        bottomMargin=2 * cm,
+    )
+
+    elements = []
+
+    # ------------------------------------------------------------
+    # Bandeau haut
+    # ------------------------------------------------------------
+    today = datetime.date.today().strftime("%d %B %Y")
+    title = f"Menu Anti-Gaspi — {today}"
+    elements.append(Paragraph(title, styles["title"]))
+    elements.append(Spacer(1, 0.4 * cm))
+
+    # ------------------------------------------------------------
+    # Section : Menu complet
+    # ------------------------------------------------------------
+    elements.append(Paragraph("🍽️ Menu généré", styles["h2"]))
+
+    for line in menu_text.split("\n"):
+        elements.append(Paragraph(line, styles["normal"]))
+
+    elements.append(Spacer(1, 0.6 * cm))
+
+    # ------------------------------------------------------------
+    # Section : Produits urgents
+    # ------------------------------------------------------------
+    urgents = [it for it in missing_items if it["priorite"] == 1]
+
+    if urgents:
+        elements.append(Paragraph("🔥 Produits très importants", styles["h2"]))
+        for it in urgents:
+            txt = f"- {it['nom']} (pour {it['jour']} — {it['repas']})"
+            elements.append(Paragraph(txt, styles["urgent"]))
+        elements.append(Spacer(1, 0.5 * cm))
+
+    # ------------------------------------------------------------
+    # Section : Liste de courses complète
+    # ------------------------------------------------------------
+    elements.append(Paragraph("🛒 Liste de courses", styles["h2"]))
+
+    if not missing_items:
+        elements.append(Paragraph("Aucun ingrédient manquant 🎉", styles["normal"]))
+    else:
+        data = [["Ingrédient", "Jour", "Repas", "Priorité"]]
+
+        for it in missing_items:
+            badge = (
+                "🔥 P1"
+                if it["priorite"] == 1
+                else ("⚠️ P2" if it["priorite"] == 2 else "🟢 P3")
+            )
+            data.append([
+                it["nom"],
+                it["jour"],
+                it["repas"],
+                badge,
+            ])
+
+        table = Table(data, colWidths=[6 * cm, 3 * cm, 3 * cm, 3 * cm])
+
+        table_style = TableStyle([
+            ('BACKGROUND', (0, 0), (-1, 0), styles["accent"]),
+            ('TEXTCOLOR', (0, 0), (-1, 0), colors.white),
+            ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
+            ('FONTSIZE', (0, 0), (-1, 0), 12),
+
+            ('BACKGROUND', (0, 1), (-1, -1), colors.whitesmoke),
+            ('TEXTCOLOR', (0, 1), (-1, -1), colors.black),
+
+            ('GRID', (0, 0), (-1, -1), 0.5, colors.grey),
+            ('ALIGN', (1, 1), (-1, -1), 'CENTER'),
         ])
 
-    table = Table(table_data, colWidths=[55, 140, 80, 80, 80, 60])
-    table.setStyle(TableStyle([
-        ('BACKGROUND', (0,0), (-1,0), colors.HexColor('#1ABC9C')),
-        ('TEXTCOLOR', (0,0), (-1,0), colors.white),
-        ('ALIGN', (0,0), (-1,-1), 'LEFT'),
-        ('FONTNAME', (0,0), (-1,0), 'Helvetica-Bold'),
-        ('BOTTOMPADDING', (0,0), (-1,0), 8),
-        ('BACKGROUND', (0,1), (-1,-1), colors.HexColor('#ECF0F1')),
-        ('GRID', (0,0), (-1,-1), 0.5, colors.gray)
-    ]))
+        table.setStyle(table_style)
+        elements.append(table)
 
-    story.append(table)
-    story.append(Spacer(1, 20))
+    elements.append(Spacer(1, 1 * cm))
 
-    # QR CODE VERS L'APP
-    qr_code = qr.QrCodeWidget(app_url)
-    bounds = qr_code.getBounds()
-    size = 120
-    d = Drawing(size, size)
-    d.add(qr_code)
+    # ------------------------------------------------------------
+    # QR Code vers l’app Streamlit
+    # ------------------------------------------------------------
+    elements.append(Paragraph("🔗 Ouvrir l'application", styles["h2"]))
 
-    story.append(Paragraph("📱 Accédez à l'application :", section))
-    story.append(d)
+    qr_buffer = generate_qr_code()
+    from reportlab.platypus import Image
+    qr_img = Image(qr_buffer, width=4 * cm, height=4 * cm)
 
-    # Build final avec bandeau
-    doc.build(
-        story,
-        onFirstPage=lambda c, d: draw_header(c, d, theme),
-        onLaterPages=lambda c, d: draw_header(c, d, theme)
-    )
+    elements.append(qr_img)
+
+    # ------------------------------------------------------------
+    # Construction du PDF
+    # ------------------------------------------------------------
+    doc.build(elements)
+
+    buffer.seek(0)
+    return buffer
 
 
-# ------------------------------------------------------------
-# 4. Bouton Streamlit de téléchargement PDF
-# ------------------------------------------------------------
+# ============================================================
+#  Bouton Streamlit pour télécharger le PDF
+# ============================================================
 
 def download_pdf_button(menu_text, missing_items, logo_path=None, theme="light"):
-    output_path = "menu_anti_gaspi.pdf"
-    export_menu_pdf(menu_text, missing_items, output_path, logo_path, theme)
+    """Crée le bouton Streamlit pour télécharger le PDF."""
 
-    with open(output_path, "rb") as f:
-        st.download_button(
-            label="📄 Télécharger le PDF premium",
-            data=f,
-            file_name=output_path,
-            mime="application/pdf"
-        )
+    buffer = build_pdf(menu_text, missing_items, theme)
+
+    st.download_button(
+        label="📄 Télécharger le PDF",
+        data=buffer,
+        file_name="menu_anti_gaspi.pdf",
+        mime="application/pdf",
+        use_container_width=True,
+    )
