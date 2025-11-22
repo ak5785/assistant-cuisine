@@ -1,261 +1,134 @@
+from google import genai
+from google.genai import types
+import json
+import streamlit as st
+import requests
 import re
-from typing import List, Dict
+
+# ===============================
+#  IA GEMINI EN MODE TEXTE STABLE
+# ===============================
+
+def gemini_generate_text(prompt: str) -> str:
+    GEMINI_KEY = st.secrets.get("GEMINI_API_KEY")
+    if not GEMINI_KEY:
+        raise ValueError("GEMINI_API_KEY manquante dans secrets.toml")
+
+    client = genai.Client(api_key=GEMINI_KEY)
+
+    try:
+        response = client.models.generate_content(
+            model="gemini-2.0-flash-exp",
+            contents=prompt,
+            config=types.GenerateContentConfig(
+                temperature=0.35,
+            )
+        )
+        return response.text
+    except Exception as e:
+        raise Exception(f"Erreur Gemini texte : {e}")
+
+# ===============
+#  Fallback GPT-4o
+# ===============
+
+def gpt_generate_text(prompt: str) -> str:
+    OPENAI_KEY = st.secrets.get("OPENAI_API_KEY")
+    if not OPENAI_KEY:
+        raise ValueError("OPENAI_API_KEY manquante dans secrets.toml")
+
+    headers = {
+        "Authorization": f"Bearer {OPENAI_KEY}",
+        "Content-Type": "application/json"
+    }
+
+    payload = {
+        "model": "gpt-4o-mini",
+        "messages": [{"role": "user", "content": prompt}],
+        "max_tokens": 1500,
+        "temperature": 0.35
+    }
+
+    res = requests.post(
+        "https://api.openai.com/v1/chat/completions",
+        headers=headers,
+        json=payload
+    )
+
+    if res.status_code != 200:
+        raise Exception("Erreur OpenAI : " + res.text)
+
+    return res.json()["choices"][0]["message"]["content"]
 
 
-# ------------------------------------------------------------
-# 1) Catégories automatiques (intelligence simple & robuste)
-# ------------------------------------------------------------
-
-CATEGORY_KEYWORDS = {
-    "viande": ["boeuf", "bœuf", "poulet", "porc", "veau", "agneau", "jambon", "lardon", "saucisse"],
-    "poisson": ["saumon", "thon", "cabillaud", "merlu", "colin", "truite", "crevette"],
-    "féculent": ["pâtes", "pates", "riz", "semoule", "quinoa", "couscous", "pommes de terre", "pomme de terre", "patate"],
-    "légume": ["carotte", "carottes", "courgette", "courgettes", "poivron", "oignon", "tomate", "brocoli", "salade", "épinard", "haricot", "chou", "champignon"],
-    "fruit": ["pomme", "banane", "poire", "kiwi", "orange", "mandarine", "fraise", "raisin"],
-    "laitier": ["lait", "yaourt", "fromage", "crème", "beurre", "mozzarella", "gruyère", "cheddar"],
-}
-
-
-def categorize_ingredient(name: str) -> str:
-    """
-    Détecte la catégorie d’un ingrédient selon des mots-clés.
-    """
-    n = name.lower()
-    for cat, keywords in CATEGORY_KEYWORDS.items():
-        for kw in keywords:
-            if kw in n:
-                return cat
-    return "autre"
-
-
-# ------------------------------------------------------------
-# 2) Extraction du plan (jours / repas / textes)
-# ------------------------------------------------------------
-
-def parse_menu_structure(menu_text: str) -> List[Dict]:
-    """
-    Analyse le menu IA et construit une liste structurée :
-    [
-        { "day": "Jour 1", "meal": "Déjeuner", "text": "Poulet + riz" },
-        ...
-    ]
-    """
-    lines = menu_text.split("\n")
-    blocks = []
-    current_day = None
-    current_meal = None
-
-    for line in lines:
-        l = line.strip()
-        lower = l.lower()
-
-        # Détection jour
-        if lower.startswith("jour"):
-            current_day = l
-            current_meal = None
-            continue
-
-        # Détection repas
-        if any(k in lower for k in ["petit", "déj", "dejeuner", "dîner", "diner", "collation", "snack"]):
-            current_meal = l
-            continue
-
-        # Ingrédient / description associée
-        if current_day and current_meal and l:
-            blocks.append({
-                "day": current_day,
-                "meal": current_meal,
-                "text": l
-            })
-
-    return blocks
-
-
-# ------------------------------------------------------------
-# 3) Extraction des ingrédients du texte IA
-# ------------------------------------------------------------
-
-def extract_ingredients_from_text(text: str) -> List[str]:
-    """
-    Sépare un texte brut en ingrédients probables.
-    """
-    t = text.lower()
-    t = re.sub(r"[•\-•\t]", " ", t)
-    parts = re.split(r",| avec | et ", t)
-
-    ingredients = []
-    for p in parts:
-        p = p.strip()
-        if not p:
-            continue
-        if any(w in p for w in ["cuire", "four", "mixer", "ajouter", "servir"]):
-            continue
-        ingredients.append(p)
-
-    return ingredients
-
-
-# ------------------------------------------------------------
-# 4) Estimation des quantités (NLP simple mais efficace)
-# ------------------------------------------------------------
-
-def estimate_quantity_for_ingredient(raw_text: str) -> str:
-    """
-    Détecte dans un texte : "200g", "300 g", "2 œufs", "3 tomates"... 
-    """
-    patterns = [
-        r"\b\d+\s*g\b",
-        r"\b\d+\s*kg\b",
-        r"\b\d+\s*ml\b",
-        r"\b\d+\s*l\b",
-        r"\b\d+\s*(oeuf|œuf|oeufs|œufs)\b",
-        r"\b\d+\s*(tomates?|oignons?|carottes?)\b",
-        r"\b\d+\s*(pomme[s]? de terre)\b",
-    ]
-
-    for pat in patterns:
-        m = re.search(pat, raw_text.lower())
-        if m:
-            return m.group(0)
-
-    return ""
-
-
-# ------------------------------------------------------------
-# 5) Moteur complet — ingrédients manquants PRO
-# ------------------------------------------------------------
-
-def compute_missing_ingredients_pro(menu_text: str, inventory_df) -> List[Dict]:
-    """
-    Retourne une liste structurée :
-    [
-        {
-          "nom": "...",
-          "categorie": "...",
-          "priorite": 1/2/3,
-          "jour": "...",
-          "repas": "...",
-          "quantite_estimee": "200 g"
-        }
-    ]
-    """
-
-    if inventory_df is None or inventory_df.empty:
-        return []
-
-    # Inventaire (noms en minuscules)
-    stock_names = [str(x).lower().strip() for x in inventory_df["Nom"].tolist()]
-
-    blocks = parse_menu_structure(menu_text)
-    results = []
-
-    for blk in blocks:
-        day = blk["day"]
-        meal = blk["meal"]
-        txt = blk["text"]
-
-        # Détecter numéro du jour pour la priorité
-        m = re.search(r"jour\s+(\d+)", day.lower())
-        if m:
-            d = int(m.group(1))
-            if d == 1:
-                priority = 1
-            elif d == 2:
-                priority = 2
-            else:
-                priority = 3
-        else:
-            priority = 3
-
-        # Extraction des ingrédients probables
-        candidates = extract_ingredients_from_text(txt)
-
-        for ing in candidates:
-            name = ing.strip()
-            if not name:
-                continue
-
-            # Déjà en stock ?
-            if any(name in s for s in stock_names):
-                continue
-
-            # Catégorie
-            cat = categorize_ingredient(name)
-
-            # Quantité estimée
-            qty_est = estimate_quantity_for_ingredient(txt)
-
-            # Éviter doublons exacts
-            exists = any(r["nom"] == name and r["jour"] == day and r["repas"] == meal for r in results)
-            if exists:
-                continue
-
-            results.append({
-                "nom": name,
-                "categorie": cat,
-                "priorite": priority,
-                "jour": day,
-                "repas": meal,
-                "quantite_estimee": qty_est
-            })
-
-    # Trier par priorité (1 = urgent)
-    results.sort(key=lambda x: x["priorite"])
-    return results
-
-
-# ------------------------------------------------------------
-# 6) Génération IA du menu (Gemini / Claude / GPT)
-# ------------------------------------------------------------
-
-from ia_utils import analyze_with_gemini, analyze_with_claude, analyze_with_openai
-
+# ============================================================
+#    FONCTION PRINCIPALE : GENERATION DE MENU 100% STABLE
+# ============================================================
 
 def generate_menu_ai(inventory_df, nb_days=5, nb_people=2, style="Équilibré", restrictions=""):
     """
-    Génère un texte brut de menu via l'IA Gemini (plus stable pour ce format).
+    Nouvelle version stable utilisant Gemini uniquement en mode TEXTE.
+    Fallback OpenAI si erreur.
+    Format STRICT pour compatibilité parsing.
     """
 
-    available = ", ".join(inventory_df["Nom"].tolist())
+    # Construire la liste des produits disponibles
+    stock = inventory_df.sort_values("Jours Restants", ascending=True)
 
+    expiring_soon = ", ".join(
+        stock[stock["Jours Restants"] <= 3]["Nom"].tolist()
+    ) or "aucun"
+
+    full_stock = ", ".join(stock["Nom"].tolist()) or "aucun"
+
+    # Prompt très strict et formaté
     prompt = f"""
-Génère un menu anti-gaspi de {nb_days} jours pour {nb_people} personne(s).
+Tu es un expert culinaire anti-gaspi.
 
-Style : {style}
-Restrictions : {restrictions}
+Génère un menu sur {nb_days} jours, pour {nb_people} personne(s).
+Style demandé : {style}
+Restrictions alimentaires : {restrictions if restrictions else "aucune"}
 
-Tiens compte des aliments en stock :
-{available}
+LISTE DES ALIMENTS EN STOCK :
+{full_stock}
 
-Format attendu STRICT :
+ALIMENTS À CONSOMMER EN PRIORITÉ (moins de 3 jours) :
+{expiring_soon}
+
+⚠️ FORMAT FINAL STRICT A RESPECTER ABSOLUMENT :
 Jour 1
   Petit-déjeuner : ...
   Déjeuner : ...
   Dîner : ...
 
 Jour 2
-  ...
+  Petit-déjeuner : ...
+  Déjeuner : ...
+  Dîner : ...
+(etc.)
+
+⚠️ EXIGENCES IMPORTANTES :
+- Toujours 3 repas par jour (Petit-déjeuner, Déjeuner, Dîner)
+- Prioriser les aliments proches d'expiration
+- Proposer des repas simples et réalistes
+- Pas de contenu additionnel avant ou après
+- Pas de JSON
+- Pas de balises
+
+Donne uniquement le texte du menu (pas d’explications).
 """
 
-    # On utilise Gemini car il est le plus stable pour générer du texte structuré
+    # Essayer GEMINI (stable)
     try:
-        response = analyze_with_gemini(
-            image_file=None  # Le wrapper Gemini accepte un contenu sans image
-        )
-    except:
-        # fallback si la fonction image-only ne passe pas
-        response = None
+        out = gemini_generate_text(prompt).strip()
+        if out.lower().startswith("jour"):
+            return out
+    except Exception as e:
+        st.warning(f"Gemini a échoué : {e}. Fallback vers GPT…")
 
-    # On doit appeler Gemini en mode texte (sans image)
-    client = analyze_with_gemini.__self__ if hasattr(analyze_with_gemini, "__self__") else None
-    if client:
-        try:
-            out = client.models.generate_content(
-                model="gemini-2.0-flash-exp",
-                contents=prompt
-            )
-            return out.text
-        except:
-            return "Erreur : génération menu impossible."
+    # Fallback GPT-4o-mini
+    out = gpt_generate_text(prompt).strip()
+    if out.lower().startswith("jour"):
+        return out
 
-    return "Erreur : Gemini non disponible."
+    return "Erreur : impossible de générer un menu valide."
