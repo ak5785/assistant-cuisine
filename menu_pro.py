@@ -1,24 +1,25 @@
-# menu_pro.py
-
 import re
-import datetime
 from typing import List, Dict
 
-# --- Catégorisation simple par mots clés ---
+
+# ------------------------------------------------------------
+# 1) Catégories automatiques (intelligence simple & robuste)
+# ------------------------------------------------------------
 
 CATEGORY_KEYWORDS = {
-    "viande": ["boeuf", "bœuf", "poulet", "porc", "veau", "agneau", "lardons", "jambon", "saucisse"],
+    "viande": ["boeuf", "bœuf", "poulet", "porc", "veau", "agneau", "jambon", "lardon", "saucisse"],
     "poisson": ["saumon", "thon", "cabillaud", "merlu", "colin", "truite", "crevette"],
-    "féculent": ["pâtes", "pates", "riz", "semoule", "quinoa", "pommes de terre", "pomme de terre", "patate", "couscous"],
-    "légume": ["carotte", "carottes", "courgette", "courgettes", "poivron", "poivrons", "oignon", "oignons",
-               "tomate", "tomates", "brocoli", "brocolis", "salade", "épinards", "epinards"],
-    "fruit": ["pomme", "pommes", "banane", "bananes", "poire", "poires", "kiwi", "fraises", "orange", "oranges"],
-    "laitier": ["lait", "yaourt", "fromage", "crème", "creme", "beurre", "mozzarella", "gruyère", "cheddar"],
+    "féculent": ["pâtes", "pates", "riz", "semoule", "quinoa", "couscous", "pommes de terre", "pomme de terre", "patate"],
+    "légume": ["carotte", "carottes", "courgette", "courgettes", "poivron", "oignon", "tomate", "brocoli", "salade", "épinard", "haricot", "chou", "champignon"],
+    "fruit": ["pomme", "banane", "poire", "kiwi", "orange", "mandarine", "fraise", "raisin"],
+    "laitier": ["lait", "yaourt", "fromage", "crème", "beurre", "mozzarella", "gruyère", "cheddar"],
 }
 
 
 def categorize_ingredient(name: str) -> str:
-    """Retourne une catégorie simple pour un ingrédient."""
+    """
+    Détecte la catégorie d’un ingrédient selon des mots-clés.
+    """
     n = name.lower()
     for cat, keywords in CATEGORY_KEYWORDS.items():
         for kw in keywords:
@@ -27,35 +28,39 @@ def categorize_ingredient(name: str) -> str:
     return "autre"
 
 
-# --- Parsing du menu IA ---
+# ------------------------------------------------------------
+# 2) Extraction du plan (jours / repas / textes)
+# ------------------------------------------------------------
 
 def parse_menu_structure(menu_text: str) -> List[Dict]:
     """
-    Analyse le texte du menu IA et extrait des blocs du type :
-    Jour X / repas / lignes d'ingrédients.
-    On reste volontairement simple & robuste.
+    Analyse le menu IA et construit une liste structurée :
+    [
+        { "day": "Jour 1", "meal": "Déjeuner", "text": "Poulet + riz" },
+        ...
+    ]
     """
     lines = menu_text.split("\n")
+    blocks = []
     current_day = None
     current_meal = None
-    blocks = []
 
     for line in lines:
         l = line.strip()
         lower = l.lower()
 
-        # Détection d'un "jour"
-        if lower.startswith("jour ") or lower.startswith("jour"):
+        # Détection jour
+        if lower.startswith("jour"):
             current_day = l
             current_meal = None
             continue
 
-        # Détection d'un repas
-        if any(x in lower for x in ["petit-déj", "petit déj", "petit déjeuner", "petit dejeuner", "déjeuner", "dejeuner", "dîner", "diner", "collation", "dessert"]):
+        # Détection repas
+        if any(k in lower for k in ["petit", "déj", "dejeuner", "dîner", "diner", "collation", "snack"]):
             current_meal = l
             continue
 
-        # Lignes d'ingrédients ou de description associées
+        # Ingrédient / description associée
         if current_day and current_meal and l:
             blocks.append({
                 "day": current_day,
@@ -66,45 +71,46 @@ def parse_menu_structure(menu_text: str) -> List[Dict]:
     return blocks
 
 
-# --- Extraction d'ingrédients + estimation quantités ---
+# ------------------------------------------------------------
+# 3) Extraction des ingrédients du texte IA
+# ------------------------------------------------------------
 
 def extract_ingredients_from_text(text: str) -> List[str]:
     """
-    Extrait des candidats ingrédients à partir d'un texte.
-    Approche simple : on coupe sur virgules / tirets / 'avec'.
+    Sépare un texte brut en ingrédients probables.
     """
-    # nettoyage des puces
-    t = re.sub(r"[•\-••]", " ", text.lower())
-    # on coupe sur virgules et 'avec'
-    parts = re.split(r",| et | avec ", t)
-    ingredients = []
+    t = text.lower()
+    t = re.sub(r"[•\-•\t]", " ", t)
+    parts = re.split(r",| avec | et ", t)
 
+    ingredients = []
     for p in parts:
         p = p.strip()
         if not p:
             continue
-        # remove mots trop génériques
-        if any(w in p for w in ["cuire", "servir", "ajouter", "mélanger", "mixer", "four", "poêle"]):
+        if any(w in p for w in ["cuire", "four", "mixer", "ajouter", "servir"]):
             continue
-        # on garde la phrase telle quelle comme candidat
         ingredients.append(p)
 
     return ingredients
 
 
+# ------------------------------------------------------------
+# 4) Estimation des quantités (NLP simple mais efficace)
+# ------------------------------------------------------------
+
 def estimate_quantity_for_ingredient(raw_text: str) -> str:
     """
-    Essaie de trouver une quantité (ex: '200 g', '2 œufs') dans le texte.
-    Retourne une chaîne libre pour affichage.
+    Détecte dans un texte : "200g", "300 g", "2 œufs", "3 tomates"... 
     """
-    # exemples: 200g, 200 g, 2 œufs, 3 tomates...
     patterns = [
         r"\b\d+\s*g\b",
         r"\b\d+\s*kg\b",
         r"\b\d+\s*ml\b",
         r"\b\d+\s*l\b",
-        r"\b\d+\s*(oeufs|œufs|oeuf|œuf)\b",
-        r"\b\d+\s*(tomates?|carottes?|pommes de terre|pomme de terre)\b",
+        r"\b\d+\s*(oeuf|œuf|oeufs|œufs)\b",
+        r"\b\d+\s*(tomates?|oignons?|carottes?)\b",
+        r"\b\d+\s*(pomme[s]? de terre)\b",
     ]
 
     for pat in patterns:
@@ -112,111 +118,144 @@ def estimate_quantity_for_ingredient(raw_text: str) -> str:
         if m:
             return m.group(0)
 
-    # fallback : rien trouvé
     return ""
 
 
-# --- Fonction PRO principale : ingrédients manquants avec priorisation, catégories, quantités ---
+# ------------------------------------------------------------
+# 5) Moteur complet — ingrédients manquants PRO
+# ------------------------------------------------------------
 
 def compute_missing_ingredients_pro(menu_text: str, inventory_df) -> List[Dict]:
     """
-    Retourne une liste de dicts :
-    {
-      "nom": "...",
-      "categorie": "...",
-      "priorite": 1/2/3,
-      "jour": "Jour 1 ...",
-      "repas": "Déjeuner ...",
-      "quantite_estimee": "200 g"
-    }
+    Retourne une liste structurée :
+    [
+        {
+          "nom": "...",
+          "categorie": "...",
+          "priorite": 1/2/3,
+          "jour": "...",
+          "repas": "...",
+          "quantite_estimee": "200 g"
+        }
+    ]
     """
 
     if inventory_df is None or inventory_df.empty:
         return []
 
-    # inventaire en minuscules pour comparaison
+    # Inventaire (noms en minuscules)
     stock_names = [str(x).lower().strip() for x in inventory_df["Nom"].tolist()]
 
     blocks = parse_menu_structure(menu_text)
     results = []
 
-    # Mappage priorité par jour (Jour 1 = plus urgent)
-    # On essaie de détecter “Jour 1”, “Jour 2”, etc.
     for blk in blocks:
-        day_label = blk["day"]
-        meal_label = blk["meal"]
+        day = blk["day"]
+        meal = blk["meal"]
         txt = blk["text"]
 
-        # priorité par défaut
-        priority = 3
-
-        m = re.search(r"jour\s+(\d+)", day_label.lower())
+        # Détecter numéro du jour pour la priorité
+        m = re.search(r"jour\s+(\d+)", day.lower())
         if m:
-            day_num = int(m.group(1))
-            if day_num == 1:
+            d = int(m.group(1))
+            if d == 1:
                 priority = 1
-            elif day_num == 2:
+            elif d == 2:
                 priority = 2
             else:
                 priority = 3
+        else:
+            priority = 3
 
-        # extraction ingrédients candidats
+        # Extraction des ingrédients probables
         candidates = extract_ingredients_from_text(txt)
 
-        for cand in candidates:
-            name = cand.strip()
+        for ing in candidates:
+            name = ing.strip()
             if not name:
                 continue
 
-            # s'il est déjà dans le stock, on ignore
+            # Déjà en stock ?
             if any(name in s for s in stock_names):
                 continue
 
-            # tentative d'estimation quantité
-            qty_est = estimate_quantity_for_ingredient(txt)
-
-            # catégorie simple
+            # Catégorie
             cat = categorize_ingredient(name)
 
-            # on évite les doublons exacts (même nom + jour + repas)
-            if any(r["nom"] == name and r["jour"] == day_label and r["repas"] == meal_label for r in results):
+            # Quantité estimée
+            qty_est = estimate_quantity_for_ingredient(txt)
+
+            # Éviter doublons exacts
+            exists = any(r["nom"] == name and r["jour"] == day and r["repas"] == meal for r in results)
+            if exists:
                 continue
 
             results.append({
                 "nom": name,
                 "categorie": cat,
                 "priorite": priority,
-                "jour": day_label,
-                "repas": meal_label,
+                "jour": day,
+                "repas": meal,
                 "quantite_estimee": qty_est
             })
 
-    # tri final par priorité (1 = très urgent, 3 = moins)
+    # Trier par priorité (1 = urgent)
     results.sort(key=lambda x: x["priorite"])
     return results
 
 
-# --- Stubs pour exports (PDF / Notion) ---
+# ------------------------------------------------------------
+# 6) Génération IA du menu (Gemini / Claude / GPT)
+# ------------------------------------------------------------
 
-def export_menu_to_pdf(menu_text: str, missing_items: List[Dict], output_path: str):
-    """
-    Stub : ici on pourrait utiliser reportlab ou fpdf pour générer un vrai PDF.
-    Pour l'instant, on se contente d'écrire un .txt ou laisser vide.
-    """
-    with open(output_path, "w", encoding="utf-8") as f:
-        f.write("MENU ANTI-GASPI\n\n")
-        f.write(menu_text)
-        f.write("\n\nINGRÉDIENTS MANQUANTS (priorisés):\n")
-        for it in missing_items:
-            line = f"- [P{it['priorite']}] {it['nom']} ({it['categorie']})"
-            if it["quantite_estimee"]:
-                line += f" ~ {it['quantite_estimee']}"
-            line += f" — {it['jour']} / {it['repas']}\n"
-            f.write(line)
+from ia_utils import analyze_with_gemini, analyze_with_claude, analyze_with_openai
 
 
-def export_menu_to_notion_placeholder():
+def generate_menu_ai(inventory_df, nb_days=5, nb_people=2, style="Équilibré", restrictions=""):
     """
-    Stub : à implémenter si tu veux pousser le menu vers une page Notion dédiée.
+    Génère un texte brut de menu via l'IA Gemini (plus stable pour ce format).
     """
-    pass
+
+    available = ", ".join(inventory_df["Nom"].tolist())
+
+    prompt = f"""
+Génère un menu anti-gaspi de {nb_days} jours pour {nb_people} personne(s).
+
+Style : {style}
+Restrictions : {restrictions}
+
+Tiens compte des aliments en stock :
+{available}
+
+Format attendu STRICT :
+Jour 1
+  Petit-déjeuner : ...
+  Déjeuner : ...
+  Dîner : ...
+
+Jour 2
+  ...
+"""
+
+    # On utilise Gemini car il est le plus stable pour générer du texte structuré
+    try:
+        response = analyze_with_gemini(
+            image_file=None  # Le wrapper Gemini accepte un contenu sans image
+        )
+    except:
+        # fallback si la fonction image-only ne passe pas
+        response = None
+
+    # On doit appeler Gemini en mode texte (sans image)
+    client = analyze_with_gemini.__self__ if hasattr(analyze_with_gemini, "__self__") else None
+    if client:
+        try:
+            out = client.models.generate_content(
+                model="gemini-2.0-flash-exp",
+                contents=prompt
+            )
+            return out.text
+        except:
+            return "Erreur : génération menu impossible."
+
+    return "Erreur : Gemini non disponible."
