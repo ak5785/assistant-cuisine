@@ -1,101 +1,115 @@
 import streamlit as st
+from notion_client import Client
 from google import genai
 from google.genai import types
-from notion_client import Client
 import datetime
 import json
 import pandas as pd
-import base64
 import requests
+import base64
 
 # ------------------------------------------------------------
-# 🔧 CONFIGURATION DE L'APPLICATION
+# 🔧 CONFIGURATION GÉNÉRALE
 # ------------------------------------------------------------
 
-st.set_page_config(page_title="Assistant Cuisine", page_icon="🥦", layout="wide")
+st.set_page_config(page_title="Assistant Cuisine", page_icon="🍽️", layout="wide")
 
-# Récupération des clés dans Streamlit Secrets
+# Chargement des clés API
 try:
     gemini_api_key = st.secrets.get("GEMINI_API_KEY")
-    notion_token = st.secrets["NOTION_TOKEN"]
-    database_id = st.secrets["DATABASE_ID"]
     claude_api_key = st.secrets.get("CLAUDE_API_KEY")
     openai_api_key = st.secrets.get("OPENAI_API_KEY")
+    notion_token = st.secrets["NOTION_TOKEN"]
+    database_id = st.secrets["DATABASE_ID"]
 except KeyError as e:
     st.error(f"❌ Clé manquante dans Streamlit Secrets : {e}")
     st.stop()
 
-# Initialisation Notion
+# Clients Notion & Gemini
 notion = Client(auth=notion_token)
+client_gemini = genai.Client(api_key=gemini_api_key) if gemini_api_key else None
 
-# Initialisation Gemini
-client_gemini = None
-if gemini_api_key:
-    client_gemini = genai.Client(api_key=gemini_api_key)
+# ------------------------------------------------------------
+# 🧂 RÈGLES POUR LES DÉLAIS PAR DÉFAUT SELON CATÉGORIE
+# ------------------------------------------------------------
 
-# Liste des catégories et durées automatiques
 RULES = {
     "Viande": 2,
+    "Volaille": 2,
+    "Poisson": 1,
     "Légume": 5,
     "Fruit": 5,
     "Laitage": 7,
-    "Sec": 365,
-    "Autre": 3,
-    "Plat préparé": 4,
     "Produit laitier": 7,
+    "Sec": 365,
     "Pâtisserie": 3,
-    "Boulangerie": 2
+    "Boulangerie": 2,
+    "Plat préparé": 4,
+    "Autre": 3
 }
 
 # ------------------------------------------------------------
-# 🔧 UTILITAIRES
+# 🧪 INGREDIENTS SECONDAIRES NON BLOQUANTS
+# ------------------------------------------------------------
+
+SECONDARY_INGREDIENTS = [
+    "sel", "poivre", "épice", "épices", "curcuma", "paprika", "cumin", "herbes",
+    "huile", "huile d’olive", "vinaigre", "beurre", "citron", "ail", "oignon",
+    "levure", "sucre", "bouillon", "épices", "herbes de provence",
+    "sauce soja", "sauce", "miel", "épices"
+]
+
+# ------------------------------------------------------------
+# 🔧 OUTILS UTILES
 # ------------------------------------------------------------
 
 def format_database_id(id_string):
-    """Nettoie l'ID Notion."""
-    return id_string.replace('-', '').replace(' ', '').strip()
+    """Supprime les tirets inutiles dans l’ID."""
+    return id_string.replace('-', '').strip()
+
 
 # ------------------------------------------------------------
-# 🥫 RÉCUPÉRATION DES ARTICLES QUI EXPIRENT
+# 📦 INVENTAIRE COMPLET POUR LE MENU & LES RECETTES
 # ------------------------------------------------------------
 
-@st.cache_data(ttl=60)
-def get_expiring_items_from_notion(db_id, days_threshold=14):
-    """Retourne les produits qui expirent dans <days_threshold> jours."""
+def get_full_inventory_from_notion(db_id):
+    """Retourne tout l'inventaire 'En stock'."""
     formatted_id = format_database_id(db_id)
-    date_limit = (datetime.date.today() + datetime.timedelta(days=days_threshold)).isoformat()
 
     try:
         response = notion.databases.query(
             database_id=formatted_id,
             filter={
-                "and": [
-                    {"property": "Statut", "select": {"equals": "En stock"}},
-                    {"property": "Date_Péremption", "date": {"on_or_before": date_limit}}
-                ]
+                "property": "Statut",
+                "select": {"equals": "En stock"}
             }
         )
     except Exception as e:
-        st.error(f"Erreur Notion : {e}")
+        st.error(f"❌ Erreur Notion : {e}")
         return pd.DataFrame()
 
     items = []
     today = datetime.date.today()
 
-    for page in response['results']:
-        props = page['properties']
+    for page in response["results"]:
+        props = page["properties"]
 
-        name_prop = props.get("Nom", {}).get("title", [{}])
-        name = name_prop[0].get("plain_text", "N/A") if name_prop else "N/A"
+        name = props["Nom"]["title"][0]["plain_text"] if props["Nom"]["title"] else "Sans nom"
+        qty = props["Quantité"]["rich_text"][0]["plain_text"] if props["Quantité"]["rich_text"] else "1"
+        cat = props["Catégorie"]["select"]["name"] if props["Catégorie"]["select"] else "Autre"
 
-        qty_prop = props.get("Quantité", {}).get("rich_text", [{}])
-        qty = qty_prop[0].get("plain_text", "N/A") if qty_prop else "N/A"
+        expiry_str = props.get("Date_Péremption", {}).get("date", {}).get("start", None)
 
-        cat = props.get("Catégorie", {}).get("select", {}).get("name", "N/A")
-
-        expiry_str = props.get("Date_Péremption", {}).get("date", {}).get("start", today.isoformat())
-        expiry_date = datetime.date.fromisoformat(expiry_str)
-        days_left = (expiry_date - today).days
+        if expiry_str:
+            try:
+                expiry_date = datetime.date.fromisoformat(expiry_str)
+                days_left = (expiry_date - today).days
+            except:
+                expiry_date = None
+                days_left = None
+        else:
+            expiry_date = None
+            days_left = None
 
         items.append({
             "Nom": name,
@@ -106,71 +120,73 @@ def get_expiring_items_from_notion(db_id, days_threshold=14):
         })
 
     df = pd.DataFrame(items)
-    if df.empty:
-        return df
+    if "Jours Restants" in df.columns:
+        df = df.sort_values("Jours Restants", na_position="last")
 
-    return df.sort_values("Jours Restants")
+    return df
+
 
 # ------------------------------------------------------------
-# 🤖 IA — ANALYSE DES IMAGES
+# 🧠 ANALYSE IMAGE — IA (Gemini / Claude / GPT-4)
 # ------------------------------------------------------------
 
 def analyze_with_gemini(image_file):
     if not client_gemini:
-        raise ValueError("Clé Gemini manquante.")
+        raise ValueError("Clé API Gemini manquante.")
 
     image_bytes = image_file.getvalue()
     categories = list(RULES.keys())
 
     prompt = f"""
-    Analyse cette image et retourne uniquement un JSON :
-    [
-      {{"nom": "...", "quantite": "...", "categorie": "{categories}"}}
-    ]
-    """
+Analyse cette image et retourne uniquement un JSON sous forme :
+[
+  {{
+    "nom": "...",
+    "quantite": "...",
+    "categorie": "{categories}"
+  }}
+]
+"""
 
     image_part = types.Part.from_bytes(data=image_bytes, mime_type=image_file.type)
 
-    models = [
-        "gemini-2.0-flash-exp",
-        "gemini-1.5-flash-8b",
-        "gemini-1.5-flash"
-    ]
+    try:
+        res = client_gemini.models.generate_content(
+            model="gemini-2.0-flash-exp",
+            contents=[prompt, image_part],
+            config=types.GenerateContentConfig(response_mime_type="application/json")
+        )
+        txt = res.text.strip()
+        data = json.loads(txt)
 
-    last_error = None
-    for model in models:
-        try:
-            res = client_gemini.models.generate_content(
-                model=model,
-                contents=[prompt, image_part],
-                config=types.GenerateContentConfig(response_mime_type="application/json")
-            )
-            data = json.loads(res.text.strip())
-            if isinstance(data, dict) and "items" in data:
-                return data["items"]
-            if isinstance(data, dict):
-                return [data]
-            return data
-        except Exception as e:
-            last_error = e
-            continue
+        # Corrections formats Gemini
+        if isinstance(data, dict) and "items" in data:
+            return data["items"]
+        if isinstance(data, dict):
+            return [data]
+        return data
 
-    raise Exception(f"Gemini a échoué. Dernière erreur: {last_error}")
+    except Exception as e:
+        raise Exception(f"Erreur Gemini : {e}")
 
 
 def analyze_with_claude(image_file):
     if not claude_api_key:
-        raise ValueError("Clé Claude manquante.")
+        raise ValueError("Clé API Claude manquante.")
 
     img_b64 = base64.b64encode(image_file.getvalue()).decode()
     categories = list(RULES.keys())
 
     prompt = f"""
-    Retourne uniquement un JSON :
-    [
-      {{"nom":"...", "quantite":"...", "categorie":"{categories}"}}
-    ]
-    """
+Retourne uniquement un JSON:
+[
+  {{
+    "nom":"...",
+    "quantite":"...",
+    "categorie":"{categories}"
+  }}
+]
+"""
 
     headers = {
         "x-api-key": claude_api_key,
@@ -196,7 +212,6 @@ def analyze_with_claude(image_file):
 
     txt = res.json()["content"][0]["text"]
     txt = txt.replace("```json", "").replace("```", "").strip()
-
     return json.loads(txt)
 
 
@@ -208,11 +223,15 @@ def analyze_with_openai(image_file):
     categories = list(RULES.keys())
 
     prompt = f"""
-    Retourne uniquement un JSON :
-    [
-      {{"nom":"...", "quantite":"...", "categorie":"{categories}"}}
-    ]
-    """
+Retourne uniquement un JSON:
+[
+  {{
+    "nom":"...",
+    "quantite":"...",
+    "categorie":"{categories}"
+  }}
+]
+"""
 
     headers = {"Authorization": f"Bearer {openai_api_key}", "Content-Type": "application/json"}
 
@@ -234,7 +253,6 @@ def analyze_with_openai(image_file):
 
     txt = res.json()["choices"][0]["message"]["content"]
     txt = txt.replace("```json", "").replace("```", "").strip()
-
     return json.loads(txt)
 
 
@@ -247,16 +265,16 @@ def analyze_image(image_file, ai_choice):
         return analyze_with_openai(image_file)
     raise ValueError("IA inconnue.")
 
+
 # ------------------------------------------------------------
-# 📝 AJOUT DANS NOTION
+# 📝 AJOUT D'UN PRODUIT DANS NOTION
 # ------------------------------------------------------------
 
 def add_to_notion(item):
-    """Ajoute un élément dans Notion avec délai + date calculée."""
+    """Ajoute un produit avec délai, statut et date de péremption."""
     formatted_id = format_database_id(database_id)
-
     days = item.get("delai", RULES.get(item["categorie"], 3))
-    expiry_date = (datetime.date.today() + datetime.timedelta(days=days)).isoformat()
+    expiry = (datetime.date.today() + datetime.timedelta(days=days)).isoformat()
 
     notion.pages.create(
         parent={"database_id": formatted_id},
@@ -265,17 +283,16 @@ def add_to_notion(item):
             "Quantité": {"rich_text": [{"text": {"content": item["quantite"]}}]},
             "Catégorie": {"select": {"name": item["categorie"]}},
             "Statut": {"select": {"name": "En stock"}},
-            "Délai (jours)": {"number": days},   # ← nouvelle propriété
-            "Date_Péremption": {"date": {"start": expiry_date}}
+            "Délai (jours)": {"number": days},
+            "Date_Péremption": {"date": {"start": expiry}}
         }
     )
 # ------------------------------------------------------------
-# 🖥️ INTERFACE STREAMLIT — SCAN IA
+# 🖼️ INTERFACE — SCAN PAR IA (PHOTO)
 # ------------------------------------------------------------
 
-st.title("📸 Scanner de Frigo Multi-IA")
+st.header("📸 Ajouter des aliments via une photo")
 
-# IA disponibles
 available_ais = []
 if gemini_api_key:
     available_ais.append("Gemini (Google)")
@@ -285,121 +302,89 @@ if openai_api_key:
     available_ais.append("GPT-4 Vision (OpenAI)")
 
 if not available_ais:
-    st.error("❌ Aucune IA n'est disponible. Configurez une clé API.")
+    st.error("❌ Aucune IA disponible. Configure les clés API.")
     st.stop()
 
-# ------------------------------------------------------------
-# 🧊 AFFICHAGE DES ARTICLES QUI EXPIRENT
-# ------------------------------------------------------------
+ai_choice = st.selectbox("Choisissez l’IA pour analyser l’image :", available_ais)
 
-st.header("🛒 État du Garde-Manger")
-st.markdown("---")
-
-with st.spinner("Chargement..."):
-    expiring_df = get_expiring_items_from_notion(database_id)
-
-def highlight_expiry(s):
-    """Coloration selon le niveau d'urgence."""
-    if s["Jours Restants"] < 0:
-        return ['background-color:#F8BBD0;color:#D32F2F'] * len(s)
-    if s["Jours Restants"] <= 3:
-        return ['background-color:#FFE0B2;color:#E65100'] * len(s)
-    if s["Jours Restants"] <= 7:
-        return ['background-color:#FFF9C4;color:#FBC02D'] * len(s)
-    return [''] * len(s)
-
-if not expiring_df.empty:
-    st.subheader("⚠️ Articles expirant bientôt")
-    styled = expiring_df.style.apply(highlight_expiry, axis=1)
-    st.dataframe(styled, use_container_width=True, hide_index=True)
-else:
-    st.success("🎉 Aucun produit n'expire dans les 14 prochains jours.")
-
-st.markdown("---")
-
-# ------------------------------------------------------------
-# 📤 UPLOAD + ANALYSE IA
-# ------------------------------------------------------------
-
-st.header("➕ Ajouter des Courses (via Photo)")
-
-ai_choice = st.selectbox("🤖 Choisissez l'IA", available_ais)
-
-uploaded_file = st.file_uploader("Prends une photo (jpg/png/jpeg)", type=["jpg", "jpeg", "png"])
+uploaded_file = st.file_uploader("Télécharge une photo (jpg/jpeg/png)", type=["jpg", "jpeg", "png"])
 
 if uploaded_file:
-    st.image(uploaded_file, caption="Image chargée", use_container_width=True)
+    st.image(uploaded_file, use_container_width=True, caption="Image chargée")
 
-    if st.button(f"🔍 Analyser avec {ai_choice}"):
+    if st.button(f"🔍 Analyser l'image avec {ai_choice}"):
         st.session_state.pop("scanned_items", None)
-
         with st.spinner("Analyse en cours..."):
             try:
-                data = analyze_image(uploaded_file, ai_choice)
-                if data:
-                    st.session_state["scanned_items"] = data
-                    st.success(f"✨ {len(data)} aliments détectés !")
-                else:
-                    st.warning("Aucun aliment détecté.")
+                items = analyze_image(uploaded_file, ai_choice)
+                st.session_state["scanned_items"] = items
+                st.success(f"{len(items)} aliment(s) détecté(s) 🎉")
             except Exception as e:
                 st.error(f"Erreur IA : {e}")
 
+
 # ------------------------------------------------------------
-# 📝 VALIDATION DES ALIMENTS DÉTECTÉS
+# 📝 VALIDATION DES ALIMENTS DETECTÉS
 # ------------------------------------------------------------
 
 if "scanned_items" in st.session_state:
-    st.subheader("Validation des Aliments Détectés")
 
+    st.subheader("📝 Validation des aliments détectés")
     category_options = list(RULES.keys())
 
     with st.form("validation_form"):
+
         items_to_save = []
 
         for i, item in enumerate(st.session_state["scanned_items"]):
 
-            # Délai calculé automatiquement selon la catégorie
-            auto_days = RULES.get(item.get("categorie"), 3)
+            auto_days = RULES.get(item.get("categorie", "Autre"), 3)
 
             try:
-                default_index = category_options.index(item["categorie"])
+                default_cat = category_options.index(item.get("categorie", "Autre"))
             except ValueError:
-                default_index = category_options.index("Autre")
+                default_cat = category_options.index("Autre")
 
-            # Colonnes : nom / quantité / catégorie
             c1, c2, c3 = st.columns([2, 1, 1])
-            # Colonnes : délai / preview date
             c4, c5 = st.columns([1, 1])
 
             with c1:
-                nom = st.text_input(f"Nom #{i+1}", value=item["nom"], key=f"v_nom_{i}")
+                nom = st.text_input(
+                    f"Nom #{i+1}",
+                    value=item.get("nom", ""),
+                    key=f"det_nom_{i}"
+                )
 
             with c2:
-                qty = st.text_input(f"Qté #{i+1}", value=item["quantite"], key=f"v_qty_{i}")
+                qty = st.text_input(
+                    f"Quantité #{i+1}",
+                    value=item.get("quantite", ""),
+                    key=f"det_qty_{i}"
+                )
 
             with c3:
                 cat = st.selectbox(
                     f"Catégorie #{i+1}",
                     category_options,
-                    index=default_index,
-                    key=f"v_cat_{i}"
+                    index=default_cat,
+                    key=f"det_cat_{i}"
                 )
 
-            # Délai auto + modifiable
+            # Délai automatique mais modifiable
             with c4:
                 delai = st.number_input(
-                    f"Délai (jours) #{i+1}",
+                    f"Jours #{i+1}",
                     min_value=1,
                     max_value=30,
                     value=auto_days,
                     step=1,
-                    key=f"v_delai_{i}"
+                    key=f"det_days_{i}"
                 )
 
-            # Preview de la date de péremption
+            # Preview date péremption
             with c5:
                 preview = (datetime.date.today() + datetime.timedelta(days=delai)).isoformat()
-                st.write(f"📅 **Expire : {preview}**")
+                st.write(f"📅 {preview}")
 
             items_to_save.append({
                 "nom": nom,
@@ -409,20 +394,19 @@ if "scanned_items" in st.session_state:
                 "expiry": preview
             })
 
-        # Bouton de validation
-        submitted = st.form_submit_button("📤 Envoyer vers Notion")
+        submitted = st.form_submit_button("📤 Ajouter dans Notion")
 
         if submitted:
-            ok = 0
+            success = 0
             for item in items_to_save:
                 try:
                     add_to_notion(item)
-                    ok += 1
+                    success += 1
                 except Exception as e:
-                    st.error(f"Erreur pour {item['nom']} : {e}")
+                    st.error(f"Erreur : {e}")
 
-            if ok > 0:
-                st.success(f"✅ {ok} articles ajoutés dans Notion !")
+            if success > 0:
+                st.success(f"✅ {success} aliment(s) ajouté(s) dans Notion !")
                 st.balloons()
 
             st.session_state.pop("scanned_items", None)
@@ -431,10 +415,9 @@ if "scanned_items" in st.session_state:
 # 📝 AJOUT MANUEL D'ALIMENTS
 # ------------------------------------------------------------
 
-st.markdown("---")
-st.header("✏️ Ajouter Manuellement des Aliments")
+st.header("✏️ Ajouter manuellement des aliments")
 
-# Initialisation des lignes si pas déjà présent
+# Initialisation des lignes si aucune
 if "manual_items" not in st.session_state:
     st.session_state.manual_items = [{
         "nom": "",
@@ -443,7 +426,7 @@ if "manual_items" not in st.session_state:
         "delai": 3
     }]
 
-# Bouton : Ajouter une nouvelle ligne
+# Bouton → ajouter une nouvelle ligne
 if st.button("➕ Ajouter une ligne"):
     st.session_state.manual_items.append({
         "nom": "",
@@ -452,18 +435,13 @@ if st.button("➕ Ajouter une ligne"):
         "delai": 3
     })
 
-# Formulaire d'ajout manuel
 with st.form("manual_form"):
-    st.write("Ajoutez autant de produits que vous le souhaitez.")
-
-    updated_manual_items = []
+    updated_items = []
 
     for i, item in enumerate(st.session_state.manual_items):
 
-        # Auto-delay selon catégorie
         auto_days = RULES.get(item["categorie"], 3)
 
-        # Colonnes : nom / quantité / catégorie / délai / preview date
         c1, c2, c3, c4, c5 = st.columns([2, 1, 1, 1, 1])
 
         with c1:
@@ -502,7 +480,7 @@ with st.form("manual_form"):
             preview = (datetime.date.today() + datetime.timedelta(days=delai)).isoformat()
             st.write(f"📅 {preview}")
 
-        updated_manual_items.append({
+        updated_items.append({
             "nom": nom,
             "quantite": qty,
             "categorie": cat,
@@ -510,21 +488,21 @@ with st.form("manual_form"):
             "expiry": preview
         })
 
-    st.session_state.manual_items = updated_manual_items
+    st.session_state.manual_items = updated_items
 
-    manual_submit = st.form_submit_button("📤 Ajouter dans Notion")
+    submitted_manual = st.form_submit_button("📤 Ajouter dans Notion")
 
-    if manual_submit:
-        ok = 0
+    if submitted_manual:
+        success = 0
         for item in st.session_state.manual_items:
             try:
                 add_to_notion(item)
-                ok += 1
+                success += 1
             except Exception as e:
-                st.error(f"❌ Erreur pour {item['nom']} : {e}")
+                st.error(f"Erreur : {e}")
 
-        if ok > 0:
-            st.success(f"✅ {ok} articles ajoutés dans Notion !")
+        if success > 0:
+            st.success(f"✅ {success} aliments ajoutés dans Notion !")
             st.balloons()
 
         # Reset après ajout
@@ -536,9 +514,308 @@ with st.form("manual_form"):
         }]
         st.rerun()
 
+
 # ------------------------------------------------------------
-# 🎉 FIN DU SCRIPT
+# 🕒 AFFICHAGE — PRODUITS EXPIRANT BIENTÔT
 # ------------------------------------------------------------
 
-st.write("---")
-st.info("Assistant Cuisine — Optimisé, Automatisé et Connecté à Notion 🍏")
+st.markdown("---")
+st.header("🛒 État du garde-manger (anti-gaspi)")
+
+@st.cache_data(ttl=60)
+def get_expiring_items(db_id, days_threshold=14):
+    """Retourne les aliments dont la date est ≤ limite."""
+    formatted_id = format_database_id(db_id)
+    limit = (datetime.date.today() + datetime.timedelta(days=days_threshold)).isoformat()
+
+    try:
+        response = notion.databases.query(
+            database_id=formatted_id,
+            filter={
+                "and": [
+                    {"property": "Statut", "select": {"equals": "En stock"}},
+                    {"property": "Date_Péremption", "date": {"on_or_before": limit}}
+                ]
+            }
+        )
+    except Exception as e:
+        st.error(f"Erreur Notion : {e}")
+        return pd.DataFrame()
+
+    today = datetime.date.today()
+    items = []
+
+    for page in response["results"]:
+        props = page["properties"]
+
+        name = props["Nom"]["title"][0]["plain_text"] if props["Nom"]["title"] else "Sans nom"
+        qty = props["Quantité"]["rich_text"][0]["plain_text"] if props["Quantité"]["rich_text"] else ""
+        cat = props["Catégorie"]["select"]["name"] if props["Catégorie"]["select"] else "Autre"
+
+        expiry_str = props.get("Date_Péremption", {}).get("date", {}).get("start", None)
+
+        if expiry_str:
+            expiry = datetime.date.fromisoformat(expiry_str)
+            days_left = (expiry - today).days
+        else:
+            days_left = None
+
+        items.append({
+            "Nom": name,
+            "Quantité": qty,
+            "Catégorie": cat,
+            "Date_Péremption": expiry_str,
+            "Jours Restants": days_left
+        })
+
+    df = pd.DataFrame(items)
+
+    if not df.empty:
+        df = df.sort_values("Jours Restants", na_position="last")
+
+    return df
+
+
+# Récupération des items expirant
+expiring = get_expiring_items(database_id)
+
+def highlight_row(row):
+    """Coloration selon l’urgence."""
+    if row["Jours Restants"] is None:
+        return [""] * len(row)
+    if row["Jours Restants"] < 0:
+        return ["background-color:#F8BBD0; color:#B71C1C"] * len(row)
+    if row["Jours Restants"] <= 2:
+        return ["background-color:#FFCDD2; color:#C62828"] * len(row)
+    if row["Jours Restants"] <= 5:
+        return ["background-color:#FFE0B2; color:#E65100"] * len(row)
+    if row["Jours Restants"] <= 10:
+        return ["background-color:#FFF9C4; color:#F9A825"] * len(row)
+    return [""] * len(row)
+
+if expiring.empty:
+    st.success("🎉 Aucun produit n’expire dans les 14 prochains jours.")
+else:
+    styled = expiring.style.apply(highlight_row, axis=1)
+    st.dataframe(styled, use_container_width=True, hide_index=True)
+
+st.markdown("---")
+# ------------------------------------------------------------
+# 🧠 MENU INTELLIGENT ANTI-GASPI
+# ------------------------------------------------------------
+
+st.header("🧠 Menu intelligent anti-gaspi")
+
+with st.expander("Paramètres du menu", expanded=True):
+
+    menu_ai_choice = st.selectbox(
+        "IA utilisée pour générer le menu :",
+        available_ais
+    )
+
+    nb_days = st.slider(
+        "Durée du menu (jours) :",
+        min_value=3, max_value=7, value=5
+    )
+
+    nb_people = st.number_input(
+        "Nombre de personnes :", min_value=1, max_value=12, value=2
+    )
+
+    style_menu = st.selectbox(
+        "Style de menu souhaité :",
+        ["Équilibré", "Rapide", "Économique", "Gourmand", "Healthy", "Végétarien", "Surprise"]
+    )
+
+    restrictions = st.text_input(
+        "Restrictions alimentaires (optionnel) :",
+        placeholder="ex : sans lactose, sans porc, végé…"
+    )
+
+
+# ------------------------------------------------------------
+# 🧠 FONCTION IA POUR GÉNÉRER LE MENU COMPLET
+# ------------------------------------------------------------
+
+def generate_menu_ai(inventory_df, ai, nb_days, nb_people, style, restrictions):
+    """
+    Génère un menu complet + liste de courses IA.
+    Avec règles anti-gaspi + ingrédients secondaires non bloquants.
+    """
+
+    if inventory_df.empty:
+        raise ValueError("Inventaire vide.")
+
+    # Convertit l’inventaire en texte structuré
+    inv_lines = []
+    for _, row in inventory_df.iterrows():
+        inv_lines.append(
+            f"- {row['Nom']} | qté: {row['Quantité']} | cat: {row['Catégorie']} | jours restants: {row['Jours Restants']}"
+        )
+    inv_text = "\n".join(inv_lines)
+
+    # Prompt IA complet
+    prompt = f"""
+Tu es un chef spécialisé en cuisine anti-gaspi.
+
+Voici mon inventaire :
+{inv_text}
+
+Consigne :
+
+1. Propose un **menu complet sur {nb_days} jours** pour **{nb_people} personnes**.
+2. Pour **chaque jour**, propose :
+   - Petit-déjeuner
+   - Déjeuner
+   - Dîner
+   - 1 collation ou dessert
+3. Style de menu : {style}
+4. Restrictions : {restrictions if restrictions else "aucune"}
+
+⛔ IMPORTANT — Gestion des ingrédients manquants :
+
+Ne rejette JAMAIS une recette si un ingrédient secondaire manque.
+Un ingrédient secondaire = tout ce qui n’est pas essentiel à la structure du plat 
+(ex : condiment, épice, assaisonnement, herbe, matière grasse, sucre, petit ajout facultatif).
+
+Si un ingrédient secondaire manque : 
+- ignore-le, OU 
+- propose une alternative simple.
+
+Un ingrédient essentiel = l’élément principal du plat (protéine, légume majeur, féculent, base indispensable).
+S’il manque un ingrédient essentiel : 
+- conserve la recette, 
+- ajoute seulement cet ingrédient dans la section “🛒 Liste de courses complémentaire”.
+
+Ne jamais abandonner une recette à cause d’un ingrédient facultatif.
+
+Format strict :
+
+### 🧠 Menu anti-gaspi (sur {nb_days} jours)
+(Jours détaillés + recettes + ingrédients principaux + instructions)
+
+### 🛒 Liste de courses complémentaire
+- ingrédient (quantité estimée)
+- ingrédient …
+"""
+
+    # ---- IA Gemini ----
+    if ai == "Gemini (Google)":
+        res = client_gemini.models.generate_content(
+            model="gemini-2.0-flash-exp", contents=prompt
+        )
+        return res.text.strip()
+
+    # ---- IA Claude ----
+    if ai == "Claude (Anthropic)":
+        headers = {
+            "x-api-key": claude_api_key,
+            "anthropic-version": "2023-06-01",
+            "content-type": "application/json"
+        }
+        data = {
+            "model": "claude-3-5-sonnet-20241022",
+            "max_tokens": 3500,
+            "messages": [{"role": "user", "content": prompt}]
+        }
+        res = requests.post("https://api.anthropic.com/v1/messages", headers=headers, json=data)
+        return res.json()["content"][0]["text"].strip()
+
+    # ---- IA GPT-4 (OpenAI) ----
+    if ai == "GPT-4 Vision (OpenAI)":
+        headers = {"Authorization": f"Bearer {openai_api_key}", "Content-Type": "application/json"}
+        data = {
+            "model": "gpt-4o-mini",
+            "messages": [{"role": "user", "content": prompt}],
+            "max_tokens": 3500
+        }
+        res = requests.post("https://api.openai.com/v1/chat/completions", headers=headers, json=data)
+        return res.json()["choices"][0]["message"]["content"].strip()
+
+    raise ValueError("IA non reconnue")
+
+
+# ------------------------------------------------------------
+# 🛒 LISTE DE COURSES AUTOMATIQUE (calculée par ton app)
+# ------------------------------------------------------------
+
+def compute_missing_ingredients(menu_text, inventory_df):
+    """
+    Analyse le texte du menu + l'inventaire
+    et crée une liste d'ingrédients ESSENTIELS manquants.
+    """
+
+    existing = [str(x).lower() for x in inventory_df["Nom"].tolist()]
+
+    lines = menu_text.lower().split("\n")
+    missing = []
+
+    # On scan toutes les lignes contenant "ingrédient"
+    for line in lines:
+        if any(w in line for w in ["ingr", "ingredient", "ingrédients"]):
+
+            # extraction simple
+            words = line.replace(":", " ").replace(",", " ").split()
+
+            for w in words:
+                # filtre basique contre mots sans importance
+                if len(w) < 4:
+                    continue
+
+                # ignore ingrédients secondaires
+                if any(sec in w for sec in SECONDARY_INGREDIENTS):
+                    continue
+
+                # si ce n'est pas dans l'inventaire → manquant
+                if w not in existing and w not in missing:
+                    missing.append(w)
+
+    return missing
+
+
+# ------------------------------------------------------------
+# 🎛️ BOUTON — GÉNÉRATION DU MENU
+# ------------------------------------------------------------
+
+if st.button("🍽️ Générer le menu intelligent anti-gaspi"):
+
+    with st.spinner("Analyse de l’inventaire..."):
+        inventory_df = get_full_inventory_from_notion(database_id)
+
+    if inventory_df.empty:
+        st.error("Aucun produit 'En stock' dans Notion.")
+    else:
+        with st.spinner("Génération du menu en cours..."):
+
+            try:
+                menu_ai_text = generate_menu_ai(
+                    inventory_df,
+                    menu_ai_choice,
+                    nb_days,
+                    nb_people,
+                    style_menu,
+                    restrictions
+                )
+
+                st.subheader("📋 Menu anti-gaspi généré par l’IA")
+                st.markdown(menu_ai_text)
+
+                # ----------------------
+                # Liste de courses auto
+                # ----------------------
+
+                missing = compute_missing_ingredients(menu_ai_text, inventory_df)
+
+                st.subheader("🛒 Liste de courses automatique (calcul fiable)")
+
+                if not missing:
+                    st.success("🎉 Rien à acheter ! Vous avez tout pour cuisiner ce menu.")
+                else:
+                    for item in missing:
+                        st.write(f"- {item}")
+
+            except Exception as e:
+                st.error(f"Erreur IA : {e}")
+
+st.markdown("---")
+st.info("Assistant Cuisine — Menu intelligent anti-gaspi 🍽️")
