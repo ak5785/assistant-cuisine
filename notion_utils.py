@@ -90,20 +90,20 @@ def get_full_inventory():
         return pd.DataFrame()
 
     try:
-        # Requête Notion avec gestion des différents noms de propriété possibles
+        # Utilise "Statut" pour correspondre à votre base Notion
         response = notion.databases.query(
             database_id=DATABASE_ID,
             filter={
-                "or": [
-                    {"property": "Statut", "select": {"equals": "En stock"}},
-                    {"property": "Status", "select": {"equals": "En stock"}}
-                ]
+                "property": "Statut",
+                "select": {
+                    "equals": "En stock"
+                }
             },
             sorts=[{"property": "Date_péremption", "direction": "ascending"}],
         )
     except Exception as e:
         st.error(f"Erreur lors de la connexion à Notion : {e}")
-        st.info("Vérifiez que votre base de données Notion contient bien les propriétés : Nom, Quantité, Catégorie, Délai, Date_péremption, et Statut (ou Status)")
+        st.info("Vérifiez que votre base de données Notion contient bien les propriétés : Nom, Quantité, Catégorie, Délai, Date_péremption, et Statut")
         return pd.DataFrame()
 
     rows = []
@@ -122,9 +122,9 @@ def get_full_inventory():
             # Gestion du délai
             delai = props.get("Délai", {}).get("number", 0) or 0
 
-            # Gestion de la date de péremption (avec fallback sur ancien nom)
+            # Gestion de la date de péremption
             expiry_raw = None
-            date_prop = props.get("Date_péremption") or props.get("Date péremption", {})
+            date_prop = props.get("Date_péremption", {})
             if date_prop and date_prop.get("date"):
                 expiry_raw = date_prop["date"].get("start")
             
