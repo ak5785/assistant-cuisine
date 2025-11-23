@@ -610,4 +610,4 @@ MENU_DATABASE_ID
     )
 
     st.markdown("---")
-    st.markdown("Merci d'utiliser l'Assistant Cuisine Anti-Gaspi 💚
+    st.markdown("Merci d'utiliser l'Assistant Cuisine Anti-Gaspi 💚")
