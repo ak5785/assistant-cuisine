@@ -1,7 +1,6 @@
 import streamlit as st
 import datetime
 import pandas as pd
-import re
 
 # --- Modules internes ---
 from ia_utils import analyze_image
@@ -26,7 +25,7 @@ st.set_page_config(
     layout="wide",
 )
 
-# CSS amélioré pour une meilleure mise en page
+# Un peu de CSS pour améliorer l’usage sur mobile
 st.markdown(
     """
 <style>
@@ -50,144 +49,12 @@ button[kind="primary"], button[kind="secondary"] {
 h1, h2, h3 {
   margin-bottom: 0.3rem;
 }
-
-/* Style pour les cartes de menu */
-.menu-card {
-  background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-  border-radius: 15px;
-  padding: 20px;
-  margin: 15px 0;
-  color: white;
-  box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
-}
-
-.menu-card h3 {
-  color: white;
-  margin-top: 0;
-  font-size: 1.3rem;
-  border-bottom: 2px solid rgba(255, 255, 255, 0.3);
-  padding-bottom: 10px;
-  margin-bottom: 15px;
-}
-
-.meal-item {
-  background: rgba(255, 255, 255, 0.15);
-  border-radius: 10px;
-  padding: 12px 15px;
-  margin: 8px 0;
-  backdrop-filter: blur(10px);
-}
-
-.meal-item strong {
-  color: #ffd700;
-  font-size: 1.05rem;
-}
-
-.meal-item p {
-  margin: 5px 0 0 0;
-  line-height: 1.5;
-}
-
-/* Style pour les badges de priorité */
-.priority-badge {
-  display: inline-block;
-  padding: 4px 12px;
-  border-radius: 20px;
-  font-size: 0.85rem;
-  font-weight: bold;
-  margin-right: 8px;
-}
-
-.priority-1 {
-  background: #e74c3c;
-  color: white;
-}
-
-.priority-2 {
-  background: #f39c12;
-  color: white;
-}
-
-.priority-3 {
-  background: #27ae60;
-  color: white;
-}
-
-.shopping-item {
-  background: #f8f9fa;
-  border-left: 4px solid #667eea;
-  padding: 12px 15px;
-  margin: 8px 0;
-  border-radius: 5px;
-  display: flex;
-  align-items: center;
-  gap: 10px;
-}
-
-.shopping-item-dark {
-  background: #2d3748;
-  border-left: 4px solid #667eea;
-  color: white;
-}
 </style>
 """,
     unsafe_allow_html=True,
 )
 
 st.title("🍽️ Assistant Cuisine — Anti-Gaspi (Version Mobile)")
-
-
-# ------------------------------------------------------------
-# FONCTION POUR PARSER ET AFFICHER LE MENU
-# ------------------------------------------------------------
-
-def display_formatted_menu(menu_text):
-    """Affiche le menu dans un format visuellement amélioré."""
-    
-    # Parser le menu par jour
-    days = {}
-    current_day = None
-    
-    lines = menu_text.strip().split("\n")
-    for line in lines:
-        line = line.strip()
-        if not line:
-            continue
-            
-        # Détecter un jour
-        if re.match(r"^Jour\s+\d+", line, re.IGNORECASE):
-            current_day = line
-            days[current_day] = {"Petit-déjeuner": "", "Déjeuner": "", "Dîner": ""}
-            continue
-        
-        if current_day:
-            # Détecter les repas
-            if "Petit-déjeuner" in line:
-                days[current_day]["Petit-déjeuner"] = line.split(":", 1)[1].strip() if ":" in line else ""
-            elif "Déjeuner" in line:
-                days[current_day]["Déjeuner"] = line.split(":", 1)[1].strip() if ":" in line else ""
-            elif "Dîner" in line:
-                days[current_day]["Dîner"] = line.split(":", 1)[1].strip() if ":" in line else ""
-    
-    # Affichage avec des cartes stylisées
-    for day, meals in days.items():
-        st.markdown(f"""
-        <div class="menu-card">
-            <h3>📅 {day}</h3>
-            <div class="meal-item">
-                <strong>🌅 Petit-déjeuner</strong>
-                <p>{meals.get('Petit-déjeuner', 'Non défini')}</p>
-            </div>
-            <div class="meal-item">
-                <strong>☀️ Déjeuner</strong>
-                <p>{meals.get('Déjeuner', 'Non défini')}</p>
-            </div>
-            <div class="meal-item">
-                <strong>🌙 Dîner</strong>
-                <p>{meals.get('Dîner', 'Non défini')}</p>
-            </div>
-        </div>
-        """, unsafe_allow_html=True)
 
 
 # ------------------------------------------------------------
@@ -230,16 +97,16 @@ tab_scan, tab_manual, tab_inventory, tab_menu, tab_settings = st.tabs(
 # ------------------------------------------------------------
 
 with tab_scan:
-    st.subheader("📸 Scanner des aliments avec l'IA")
+    st.subheader("📸 Scanner des aliments avec l’IA")
     st.caption(
         "Prends une photo de ton frigo, de tes produits ou de ton panier, "
         "choisis une IA, puis valide les aliments détectés."
     )
 
     ai_choice = st.selectbox(
-        "Choix de l'IA pour l'analyse :",
+        "Choix de l’IA pour l’analyse :",
         ["Gemini (Google)", "Claude (Anthropic)", "GPT-4 Vision (OpenAI)"],
-        help="Tu peux changer d'IA si le résultat ne te convient pas.",
+        help="Tu peux changer d’IA si le résultat ne te convient pas.",
     )
 
     uploaded_file = st.file_uploader(
@@ -460,7 +327,7 @@ with tab_inventory:
     expiring = get_expiring_items()
 
     if expiring.empty:
-        st.success("🎉 Aucun produit n'expire dans les 14 prochains jours.")
+        st.success("🎉 Aucun produit n’expire dans les 14 prochains jours.")
     else:
         st.caption("Produits à consommer en priorité :")
         st.dataframe(expiring, use_container_width=True)
@@ -498,14 +365,14 @@ with tab_menu:
     )
 
     if st.button("🍽️ Générer le menu intelligent", use_container_width=True):
-        with st.spinner("Analyse de l'inventaire et génération du menu…"):
+        with st.spinner("Analyse de l’inventaire et génération du menu…"):
             inventory = get_full_inventory()
             if inventory.empty:
                 st.error(
                     "Impossible de générer un menu : inventaire vide ou aucun produit 'En stock'."
                 )
             else:
-                # Génération du menu avec l'IA (via menu_pro.generate_menu_ai)
+                # Génération du menu avec l’IA (via menu_pro.generate_menu_ai)
                 menu_text = generate_menu_ai(
                     inventory,
                     nb_days=nb_days,
@@ -516,9 +383,7 @@ with tab_menu:
 
                 st.markdown("---")
                 st.subheader("📋 Menu généré")
-                
-                # Affichage formaté du menu
-                display_formatted_menu(menu_text)
+                st.markdown(menu_text)
 
                 # Liste de courses intelligente (priorisée)
                 st.markdown("---")
@@ -530,19 +395,18 @@ with tab_menu:
                     st.success("🎉 Rien à acheter, tu as tout en stock pour ce menu !")
                 else:
                     for it in missing_items:
-                        prio = it.get("priorite", 3)
-                        badge_class = f"priority-{prio}"
-                        badge_text = "🔥 Urgent" if prio == 1 else ("⚠️ Important" if prio == 2 else "🟢 Normal")
-                        
-                        st.markdown(f"""
-                        <div class="shopping-item">
-                            <span class="priority-badge {badge_class}">{badge_text}</span>
-                            <div>
-                                <strong>{it['nom']}</strong> — {it['categorie']}<br>
-                                <small>Pour {it['jour']} • {it['repas']}</small>
-                            </div>
-                        </div>
-                        """, unsafe_allow_html=True)
+                        badge = (
+                            "🔥"
+                            if it["priorite"] == 1
+                            else ("⚠️" if it["priorite"] == 2 else "🟢")
+                        )
+                        line = (
+                            f"{badge} {it['nom']} — {it['categorie']} — "
+                            f"{it['jour']} / {it['repas']}"
+                        )
+                        if it.get("quantite_estimee"):
+                            line += f" (~{it['quantite_estimee']})"
+                        st.write("- " + line)
 
                     st.markdown("---")
                     st.subheader("📄 Export PDF du menu")
@@ -556,7 +420,7 @@ with tab_menu:
                     )
 
                     st.markdown("---")
-                    st.subheader("📝 Export du menu vers Notion ('Menus')")
+                    st.subheader("📝 Export du menu vers Notion (‘Menus’)")
 
                     if st.button(
                         "📝 Exporter ce menu dans Notion",
@@ -573,7 +437,7 @@ with tab_menu:
                             )
                             st.success("✅ Menu exporté dans Notion (base 'Menus').")
                         except Exception as e:
-                            st.error(f"Erreur lors de l'export Notion : {e}")
+                            st.error(f"Erreur lors de l’export Notion : {e}")
 
 
 # ------------------------------------------------------------
@@ -586,7 +450,7 @@ with tab_settings:
     st.markdown("### 🧩 Modules utilisés")
     st.markdown(
         """
-- `ia_utils.py` → analyse d'images (Gemini / Claude / GPT-4o)
+- `ia_utils.py` → analyse d’images (Gemini / Claude / GPT-4o)
 - `notion_utils.py` → connexion à ta base Notion (inventaire + menus)
 - `menu_pro.py` → génération du menu & liste de courses intelligente
 - `pdf_utils.py` → PDF premium (bandeau, QR, couleurs, urgences…)
@@ -594,7 +458,7 @@ with tab_settings:
     )
 
     st.markdown("### 🎨 Thème PDF")
-    st.write(f"Thème PDF actuel : **{pdf_theme}** (d'après ton choix dans la barre latérale).")
+    st.write(f"Thème PDF actuel : **{pdf_theme}** (d’après ton choix dans la barre latérale).")
 
     st.markdown("### 🔑 Secrets nécessaires (Streamlit)")
     st.code(
@@ -610,4 +474,4 @@ MENU_DATABASE_ID
     )
 
     st.markdown("---")
-    st.markdown("Merci d'utiliser l'Assistant Cuisine Anti-Gaspi 💚")
+    st.markdown("Merci d’utiliser l’Assistant Cuisine Anti-Gaspi 💚")
